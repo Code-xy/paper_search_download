@@ -27,6 +27,8 @@ class McpService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            // 用户主动停：落盘，别再自己起来
+            Store(this).mcpEnabled = false
             McpHub.stop()
             stopForegroundCompat()
             stopSelf()
@@ -43,6 +45,18 @@ class McpService : Service() {
     override fun onDestroy() {
         McpHub.stop()
         super.onDestroy()
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // 划掉最近任务不应弄死 MCP 服务
+        if (Store(this).mcpEnabled) {
+            try {
+                start(applicationContext)
+            } catch (e: Exception) {
+                // ignore
+            }
+        }
+        super.onTaskRemoved(rootIntent)
     }
 
     private fun createChannel() {

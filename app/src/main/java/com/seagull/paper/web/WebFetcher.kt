@@ -10,6 +10,8 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.seagull.paper.Net
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import org.json.JSONTokener
@@ -19,13 +21,20 @@ import kotlin.coroutines.resume
  * 用 App 内置 WebView 引擎抓页面。
  *
  * 为什么必须这么干：Google 学术这类站对陌生 HTTP 客户端会返回「JS 空壳页」——
- * HTML 里根本没有结果，必须真的执行 JS 才渲染出来；而且它认浏览器指纹和 Cookie。
- * WebView 是同一台手机上的真 Chromium：会跑 JS、指纹真实，而且能和阅读器共用
- * Cookie —— 你在阅读器里手动过一次人机验证，之后这里就能自动抓了。
+ * HTML 里没有结果，必须真的执行 JS 才渲染出来；它还认浏览器指纹和 Cookie。
+ * WebView 就是同一台手机上的真 Chromium：会跑 JS、指纹真实，还能和阅读器共用
+ * Cookie —— 你在阅读器里手动过一次人机验证，之后这里就能自动抓。
+ *
+ * 实现要点：WebView 只建一次并复用（建一次要几百毫秒），用 Mutex 串行化，
+ * 任何异常都吞掉返回空串，绝不让它把进程带崩。
  */
 object WebFetcher {
 
     private val main = Handler(Looper.getMainLooper())
+    private val mutex = Mutex()
+
+    @Volatile
+    private var cached: WebView? = null
 
     suspend fun fetchHtml(
         app: Application,
@@ -33,62 +42,93 @@ object WebFetcher {
         settleMs: Long = 2200L,
         timeoutMs: Long = 25000L,
         desktopUa: Boolean = true
-    ): String = withContext(Dispatchers.Main) {
-        suspendCancellableCoroutine { cont ->
-            val wv = WebView(app)
-            var done = false
+    ): String = mutex.withLock {
+        try {
+            withContext(Dispatchers.Main) { load(app, url, settleMs, timeoutMs, desktopUa) }
+        } catch (e: Throwable) {
+            ""
+        }
+    }
 
-            fun finish(html: String) {
-                if (done) return
-                done = true
+    private suspend fun load(
+        app: Application,
+        url: String,
+        settleMs: Long,
+        timeoutMs: Long,
+        desktopUa: Boolean
+    ): String = suspendCancellableCoroutine { cont ->
+        var web: WebView? = null
+        var done = false
+
+        fun dispose(keep: Boolean) {
+            val w = web ?: return
+            if (!keep) {
                 try {
-                    wv.stopLoading()
-                    wv.destroy()
+                    w.stopLoading()
+                    w.destroy()
+                    if (cached === w) cached = null
+                } catch (e: Exception) {
+                    cached = null
+                }
+            } else {
+                try {
+                    w.stopLoading()
                 } catch (e: Exception) {
                     // ignore
                 }
-                if (cont.isActive) cont.resume(html)
             }
+        }
 
+        fun finish(html: String, keep: Boolean) {
+            if (done) return
+            done = true
+            dispose(keep)
+            if (cont.isActive) cont.resume(html)
+        }
+
+        try {
+            web = cached
+            if (web == null) {
+                web = WebView(app)
+                cached = web
+            }
+            val w = web
             try {
-                wv.settings.javaScriptEnabled = true
-                wv.settings.domStorageEnabled = true
-                wv.settings.databaseEnabled = true
-                wv.settings.loadsImagesAutomatically = false
-                wv.settings.cacheMode = WebSettings.LOAD_DEFAULT
-                if (desktopUa) wv.settings.userAgentString = Net.DESKTOP_UA
+                w.settings.javaScriptEnabled = true
+                w.settings.domStorageEnabled = true
+                w.settings.databaseEnabled = true
+                w.settings.loadsImagesAutomatically = false
+                w.settings.blockNetworkImage = true
+                w.settings.cacheMode = WebSettings.LOAD_DEFAULT
+                if (desktopUa) w.settings.userAgentString = Net.DESKTOP_UA
             } catch (e: Exception) {
-                // 老设备上个别设置项会失败，忽略
+                // 个别 ROM 上某些设置项会抛，忽略
             }
 
-            wv.webViewClient = object : WebViewClient() {
+            w.webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView, u: String) {
                     view.postDelayed({
                         try {
                             view.evaluateJavascript(
                                 "(function(){try{return document.documentElement?document.documentElement.outerHTML:''}catch(e){return ''}})()"
-                            ) { result ->
-                                finish(decodeJsString(result))
-                            }
-                        } catch (e: Exception) {
-                            finish("")
+                            ) { result -> finish(decodeJsString(result), true) }
+                        } catch (e: Throwable) {
+                            finish("", true)
                         }
                     }, settleMs)
                 }
 
                 override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                    if (request.isForMainFrame) finish("")
+                    if (request.isForMainFrame) finish("", false)
                 }
             }
 
-            main.postDelayed({ finish("") }, timeoutMs)
-            cont.invokeOnCancellation { main.post { finish("") } }
+            main.postDelayed({ finish("", true) }, timeoutMs)
+            cont.invokeOnCancellation { main.post { finish("", true) } }
 
-            try {
-                wv.loadUrl(url)
-            } catch (e: Exception) {
-                finish("")
-            }
+            w.loadUrl(url)
+        } catch (e: Throwable) {
+            finish("", false)
         }
     }
 
