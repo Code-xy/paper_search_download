@@ -194,7 +194,8 @@ object Net {
                 accept ?: "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.9,*/*;q=0.8"
             )
             .header("Accept-Language", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7")
-            .header("Accept-Encoding", "gzip")
+        // 千万别自己加 Accept-Encoding：手动加了以后 OkHttp 就不再透明解压，
+        // 接口会返回 gzip 二进制流，被当文本读就是一堆乱码（这是踩过的大坑）。
         if (!referer.isNullOrBlank()) b.header("Referer", referer)
         return b.build()
     }
