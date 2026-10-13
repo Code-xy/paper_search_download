@@ -32,7 +32,7 @@ android {
 
     defaultConfig {
         applicationId = "com.seagull.paper"
-        minSdk = 23
+        minSdk = 24
         targetSdk = 35
         versionCode = pVCode?.toIntOrNull() ?: 11
         versionName = pVName ?: "1.3.2"
