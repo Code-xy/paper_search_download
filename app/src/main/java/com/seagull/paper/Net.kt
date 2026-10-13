@@ -1,5 +1,6 @@
 package com.seagull.paper
 
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -42,8 +43,7 @@ object Net {
     }
 
     fun host(url: String): String = try {
-        val u = okhttp3.HttpUrl.parse(url) ?: return url
-        u.host
+        url.toHttpUrlOrNull()?.host ?: url
     } catch (e: Exception) {
         url
     }
