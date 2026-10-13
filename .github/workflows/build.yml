@@ -50,4 +50,4 @@ jobs:
       abi-filters:    ${{ inputs.abi_filters || '' }}
       version-name:   ${{ inputs.version_name || '' }}
       version-code:   ${{ inputs.version_code || '' }}
-      release-on-tag: ${{ inputs.release_on_tag == false && 'false' || 'true' }}
+      release-on-tag: ${{ (github.event_name != 'workflow_dispatch' || inputs.release_on_tag != false) && 'true' || 'false' }}
