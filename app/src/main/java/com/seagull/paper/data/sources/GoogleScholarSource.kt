@@ -71,41 +71,18 @@ object GoogleScholarSource : PaperSource {
             }
         }
 
-        // 第二轮：WebView 引擎抓。现在的 Scholar 对陌生客户端会返回「JS 空壳页」，
-        // 纯 HTTP 永远解析不到结果；WebView 是真浏览器，会跑 JS、指纹真实，
-        // 还能复用你在阅读器里过验证码后留下的 Cookie。
-        val app = com.seagull.paper.AppRef.get
-        Log.w("PaperSearch", "GS http 全挂 → 上 WebView, app=" + (app != null))
-        if (app != null) {
-            for (host in mirrors.take(2)) {
-                val t0 = System.currentTimeMillis()
-                val html = com.seagull.paper.web.WebFetcher.fetchHtml(
-                    app, urlOf(host), settleMs = 1800L, timeoutMs = 18000L
-                )
-                Log.w(
-                    "PaperSearch",
-                    "GS webview " + Util.host(host) + " -> len=" + html.length +
-                            " in " + (System.currentTimeMillis() - t0) + "ms"
-                )
-                if (html.isBlank()) {
-                    lastErr = "WebView 打不开：" + Util.host(host)
-                    continue
-                }
-                if (looksCaptcha(html)) {
-                    lastErr = "Google 学术要人机验证：设置页点「打开学术搜索」过一次验证码，之后就能自动抓（Cookie 会留着）"
-                    continue
-                }
-                val items = parse(html, host)
-                if (items.isNotEmpty()) {
-                    lastGoodHost = host
-                    return@withContext items
-                }
-                lastErr = "WebView 里也没解析出结果（多半是被人机验证拦了）：" + Util.host(host)
-            }
+        // 第二轮本来想用内置 WebView 抓，但 MIUI 会直接杀掉后台 WebView 的渲染进程
+        // （logcat: Renderer process crash detected code=-1），实测拿不到 DOM。
+        // 所以这里不再硬刚：给用户可执行的下一步——用阅读器真人搜（Cookie 会留存）。
+        val hint = when {
+            lastErr.contains("429") -> "出口 IP 被 Google 限流：换个更干净的梯子节点，或等几分钟"
+            lastErr.contains("人机验证") -> "被要求人机验证：点「用阅读器搜」手动过一次，之后 Cookie 留着就好很多"
+            lastErr.contains("没有结果结构") -> "镜像给的是 JS 空壳页（必须执行 JS 才有结果）"
+            else -> lastErr
         }
-        Log.w("PaperSearch", "GS all failed: " + lastErr)
-        throw IOException(lastErr)
+        throw IOException("Google 学术抓不到（" + hint + "）。最稳的路：用「用阅读器搜」真人浏览，看到 PDF 直接点就会下载。")
     }
+
 
     private fun parse(html: String, host: String): List<PaperItem> {
         val doc = Jsoup.parse(html, host)

@@ -277,6 +277,14 @@ private fun SearchScreen(vm: SearchViewModel) {
                     fontSize = 12.5.sp
                 )
             },
+            dismissButton = {
+                TextButton(onClick = {
+                    val q = query.ifBlank { "attention is all you need" }
+                    val url = vm.previewSite.value.searchUrlTemplate.replace("{q}", Util.encPath(q))
+                    errStatus = null
+                    Actions.openReader(ctx, url, "网页搜索")
+                }) { Text("用阅读器搜（推荐）", fontSize = 12.5.sp) }
+            },
             confirmButton = { TextButton(onClick = { errStatus = null }) { Text("知道了") } }
         )
     }
