@@ -190,6 +190,8 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private val JSON_DATA_KEY = "\"" + "data" + "\""
+
     private fun diagOne(name: String, url: String, ua: String?): DiagItem {
         val r = Net.diag(url, accept = if (name == "arXiv") "application/atom+xml" else null, uaOverride = ua?.ifEmpty { null })
         val detail = when {
@@ -208,7 +210,7 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
                 if (pdf != null) "命中全文：" + pdf.take(70) else "页面里没解析出 PDF（库里可能没有）"
             }
 
-            name == "Semantic Scholar" -> if (r.body.contains(""data"")) "正常" else "返回异常内容"
+            name == "Semantic Scholar" -> if (r.body.contains(r""""data"""")) "正常" else "返回异常内容"
             name == "doi.org" -> if (r.body.isNotEmpty()) "可达（会跳到出版社）" else "可达"
             else -> {
                 val b = r.body.trimStart()
