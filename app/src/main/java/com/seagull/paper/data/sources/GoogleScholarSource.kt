@@ -59,29 +59,35 @@ object GoogleScholarSource : PaperSource {
     private fun parse(html: String, host: String): List<PaperItem> {
         val doc = Jsoup.parse(html, host)
         val out = ArrayList<PaperItem>()
-        for (el in doc.select("div.gs_ri, div.gs_r")) {
-            val h3 = el.selectFirst("h3.gs_rt") ?: continue
+        // 一条结果的外层是 div.gs_r，标题/作者在 gs_ri 里，PDF 链接在兄弟节点 gs_ggs 里，
+        // 所以必须从外层的 gs_r 里找 PDF，不能只看 gs_ri。
+        for (h3 in doc.select("h3.gs_rt")) {
+            val ri = h3.parent() ?: continue
+            val box = ri.parent() ?: ri
             val a = h3.selectFirst("a")
             val title = h3.text()
                 .replace(Regex("^\\[(PDF|HTML|BOOK|引用|CITATION)\\]\\s*", RegexOption.IGNORE_CASE), "")
                 .replace(Regex("\\s+"), " ").trim()
-            if (title.isEmpty() || title.length < 4) continue
+            if (title.length < 4) continue
+
             val link = a?.attr("href")?.trim().orEmpty()
+            // gs_ggs 里第一个 <a> 可能是 javascript:void(0)（保存/引用按钮），
+            // 所以要遍历所有链接，挑真正像 PDF 的那个。
+            val sideLinks = box.select("div.gs_ggs a").map { it.attr("href").trim() } +
+                    box.select("div.gs_or_ggsm a").map { it.attr("href").trim() }
+            val ggs = sideLinks.firstOrNull { Util.looksPdf(it) }.orEmpty()
 
-            // 右侧 gs_ggs 里是 [PDF]/[HTML] 另一份链接
-            val ggs = el.selectFirst("div.gs_ggs a")?.attr("href")?.trim().orEmpty()
-
-            val meta = el.selectFirst("div.gs_a")?.text().orEmpty()
+            val meta = (ri.selectFirst("div.gs_a") ?: box.selectFirst("div.gs_a"))?.text().orEmpty()
             val parts = meta.split(" - ")
             val authors = parts.getOrNull(0)?.trim().orEmpty()
             val venueYear = parts.getOrNull(1)?.trim().orEmpty()
             val publisher = parts.getOrNull(2)?.trim().orEmpty()
 
-            val cites = Util.intOf(el.selectFirst("div.gs_fl")?.text())
-            val snippet = el.selectFirst("div.gs_rs")?.text().orEmpty()
+            val cites = Util.intOf((ri.selectFirst("div.gs_fl") ?: box.selectFirst("div.gs_fl"))?.text())
+            val snippet = (ri.selectFirst("div.gs_rs") ?: box.selectFirst("div.gs_rs"))?.text().orEmpty()
 
             var pdf: String? = null
-            if (Util.looksPdf(ggs)) pdf = ggs
+            if (ggs.isNotEmpty()) pdf = ggs
             else if (Util.looksPdf(link)) pdf = link
 
             val landing = when {
