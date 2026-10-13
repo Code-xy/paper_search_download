@@ -84,6 +84,13 @@ object PdfResolver {
                     val r = tryEuropePmc(item, doi)
                     steps.add(r)
                     if (r.ok) add(r.detail, "Europe PMC", r.src)
+                    // 备用形态：Europe PMC render 页 + NCBI PMC
+                    val pmcid = r.detail.substringAfterLast('/', "").ifEmpty { r.src.orEmpty() }
+                    val id = Regex("PMC\\d+").find(r.detail)?.value.orEmpty()
+                    if (id.isNotEmpty()) {
+                        add("https://europepmc.org/articles/" + id + "?pdf=render", "Europe PMC", "https://europepmc.org/")
+                        add("https://www.ncbi.nlm.nih.gov/pmc/articles/" + id + "/pdf/", "PMC", "https://www.ncbi.nlm.nih.gov/")
+                    }
                 }
 
                 "preprint" -> {
@@ -211,9 +218,10 @@ object PdfResolver {
                 }
                 val pmcid = o.optString("pmcid").trim()
                 if (pmcid.isNotEmpty()) {
+                    // 官方 REST 全文接口最稳（不带 Cloudflare 挑战、不校验 Referer）
                     return ResolveStep(
                         "Europe PMC", true,
-                        "https://europepmc.org/articles/" + pmcid + "?pdf=render",
+                        "https://www.ebi.ac.uk/europepmc/webservices/rest/" + pmcid + "/fullTextPDF",
                         "https://europepmc.org/"
                     )
                 }
