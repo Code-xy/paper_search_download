@@ -1,5 +1,9 @@
 package com.seagull.paper.ui
 
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -62,6 +66,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.seagull.paper.data.PaperItem
 import com.seagull.paper.data.SourceStatus
+import com.seagull.paper.mcp.McpHub
 import com.seagull.paper.data.TaskState
 import com.seagull.paper.data.Util
 import java.io.File
@@ -456,6 +461,11 @@ private fun SettingsScreen(vm: SearchViewModel) {
     var mail by remember { mutableStateOf(vm.email) }
     var wifiOnly by remember { mutableStateOf(vm.wifiOnly()) }
     var proxy by remember { mutableStateOf(vm.proxySpec) }
+    var mcpOn by remember { mutableStateOf(vm.mcpEnabled()) }
+    var mcpPortText by remember { mutableStateOf(vm.mcpPort().toString()) }
+    var mcpTokenText by remember { mutableStateOf(vm.mcpToken()) }
+    val mcp by vm.mcpState.collectAsStateWithLifecycle()
+    val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     val diag by vm.diag.collectAsStateWithLifecycle()
     val diagRunning by vm.diagRunning.collectAsStateWithLifecycle()
 
@@ -618,6 +628,131 @@ private fun SettingsScreen(vm: SearchViewModel) {
                             color = if (d.ok) MaterialTheme.colorScheme.onSurfaceVariant
                             else MaterialTheme.colorScheme.error
                         )
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(18.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Spacer(Modifier.height(14.dp))
+
+        Text("MCP 服务（给 AI Agent 用）", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "在本机 127.0.0.1 上起一个 MCP 服务器，Claude / Cursor / 你自己的 Agent 可以直接调它：" +
+                    "搜论文、解析全文、下载 PDF、读正文/章节、看引文关系。只绑回环，不对局域网和外网开放。\n" +
+                    "启动会常驻一个前台通知（否则系统会把 socket 杀掉落）。",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(8.dp))
+
+        SwitchRow(
+            title = "启用内嵌 MCP 服务",
+            subtitle = when {
+                mcp.running -> "运行中 · " + McpHub.endpoint(mcp.port) + " · 已处理 " + mcp.calls + " 次调用"
+                mcp.error.isNotEmpty() -> "启动失败：" + mcp.error
+                else -> "已关闭"
+            },
+            checked = mcpOn,
+            onCheckedChange = { on ->
+                mcpOn = on
+                vm.setMcpEnabled(on)
+                if (on && Build.VERSION.SDK_INT >= 33) {
+                    try {
+                        notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    } catch (e: Exception) {
+                        // 没通知权限也能跑，只是通知不显示
+                    }
+                }
+                if (on) mcpTokenText = vm.mcpToken()
+            }
+        )
+
+        if (mcpOn) {
+            Spacer(Modifier.height(8.dp))
+            Text("端口（改完点应用，服务会自己重启）", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = mcpPortText,
+                    onValueChange = { mcpPortText = it.filter { c -> c.isDigit() }.take(5) },
+                    modifier = Modifier.width(140.dp),
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = MaterialTheme.colorScheme.surface,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surface
+                    )
+                )
+                Button(
+                    onClick = {
+                        val p = mcpPortText.toIntOrNull() ?: 8765
+                        vm.setMcpPort(p)
+                        mcpTokenText = vm.mcpToken()
+                    },
+                    shape = RoundedCornerShape(12.dp)
+                ) { Text("应用") }
+            }
+
+            Spacer(Modifier.height(10.dp))
+            Text("访问令牌（留空=不校验；给局域网用务必留着）", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = mcpTokenText,
+                    onValueChange = { mcpTokenText = it },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = MaterialTheme.colorScheme.surface,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surface
+                    )
+                )
+                TextButton(onClick = { mcpTokenText = vm.regenMcpToken() }) { Text("重新生成", fontSize = 12.sp) }
+            }
+
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        vm.setMcpToken(mcpTokenText)
+                        Actions.copy(ctx, McpHub.endpoint(vm.mcpPort()), "MCP 地址已复制")
+                    },
+                    shape = RoundedCornerShape(12.dp)
+                ) { Text("复制地址", fontSize = 12.5.sp) }
+                OutlinedButton(
+                    onClick = {
+                        Actions.copy(ctx, "adb forward tcp:" + vm.mcpPort() + " tcp:" + vm.mcpPort(), "adb 转发命令已复制")
+                    },
+                    shape = RoundedCornerShape(12.dp)
+                ) { Text("adb 转发", fontSize = 12.5.sp) }
+            }
+            Spacer(Modifier.height(6.dp))
+            OutlinedButton(
+                onClick = {
+                    val cmd = "npx -y supergateway --streamableHttp " + McpHub.endpoint(vm.mcpPort()) +
+                            (if (mcpTokenText.isNotBlank()) " --header \"Authorization: Bearer " + mcpTokenText + "\"" else "")
+                    Actions.copy(ctx, cmd, "supergateway 桥接命令已复制")
+                },
+                shape = RoundedCornerShape(12.dp)
+            ) { Text("复制 stdio 桥接命令（给只支持 stdio 的客户端）", fontSize = 12.5.sp) }
+
+            if (mcp.log.isNotEmpty()) {
+                Spacer(Modifier.height(10.dp))
+                Text("调用日志", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(4.dp))
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(10.dp)) {
+                        for (l in mcp.log.takeLast(10)) {
+                            Text(l, fontSize = 11.sp, lineHeight = 15.sp)
+                        }
                     }
                 }
             }

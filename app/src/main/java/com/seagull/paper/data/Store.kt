@@ -114,6 +114,19 @@ class Store(ctx: Context) {
         get() = sp.getBoolean(KEY_SCIHUB, true)
         set(v) = sp.edit().putBoolean(KEY_SCIHUB, v).apply()
 
+    /** 内嵌 MCP 服务（给 AI Agent 用）。 */
+    var mcpEnabled: Boolean
+        get() = sp.getBoolean(KEY_MCP_ON, false)
+        set(v) = sp.edit().putBoolean(KEY_MCP_ON, v).apply()
+
+    var mcpPort: Int
+        get() = sp.getInt(KEY_MCP_PORT, 8765)
+        set(v) = sp.edit().putInt(KEY_MCP_PORT, v.coerceIn(1024, 65535)).apply()
+
+    var mcpToken: String
+        get() = sp.getString(KEY_MCP_TOKEN, "").orEmpty()
+        set(v) = sp.edit().putString(KEY_MCP_TOKEN, v.trim()).apply()
+
     /** 梯子的 HTTP 代理，例如 127.0.0.1:7890；空=直连。 */
     var proxy: String
         get() = sp.getString(KEY_PROXY, "").orEmpty()
@@ -133,5 +146,8 @@ class Store(ctx: Context) {
         const val KEY_SCIHUB = "scihub"
         const val KEY_WIFI = "wifiOnly"
         const val KEY_PROXY = "proxy"
+        const val KEY_MCP_ON = "mcpOn"
+        const val KEY_MCP_PORT = "mcpPort"
+        const val KEY_MCP_TOKEN = "mcpToken"
     }
 }

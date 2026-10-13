@@ -8,6 +8,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.seagull.paper.Net
 import com.seagull.paper.data.DiagItem
+import com.seagull.paper.data.Diagnostics
 import com.seagull.paper.data.Downloader
 import com.seagull.paper.data.PaperItem
 import com.seagull.paper.data.PaperSource
@@ -163,38 +164,14 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 网络自检：把每个源的失败原因摊开，别只给用户看一个「失败」。 */
+    /** 网络自检：把每个源的失败原因摊开（具体逻辑在 data/Diagnostics，MCP 的 diagnose 共用）。 */
     fun runDiag() {
         if (_diagRunning.value) return
         _diagRunning.value = true
         _diag.value = emptyList()
-        val ctx = getApplication<Application>()
         viewModelScope.launch {
-            val cfg = RemoteConfig.active
-            val mail = store.email.ifEmpty { cfg.email }
-            val targets = listOf(
-                Triple("梯子链路", "https://www.gstatic.com/generate_204", ""),
-                Triple("arXiv", "http://export.arxiv.org/api/query?search_query=all:test&max_results=1", ""),
-                Triple("OpenAlex", "https://api.openalex.org/works?search=test&per-page=1&mailto=" + Util.encPath(mail), ""),
-                Triple("Crossref", "https://api.crossref.org/works?query=test&rows=1&mailto=" + Util.encPath(mail), ""),
-                Triple("Europe PMC", "https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=test&format=json&pageSize=1", ""),
-                Triple("DOAJ", "https://doaj.org/api/search/articles/test?pageSize=1", ""),
-                Triple(
-                    "Semantic Scholar",
-                    "https://api.semanticscholar.org/graph/v1/paper/search?query=test&limit=1&fields=title", ""
-                ),
-                Triple("Unpaywall", "https://api.unpaywall.org/v2/10.1038/nature12373?email=" + Util.encPath(mail), ""),
-            ) + cfg.scholarMirrors.take(2).map {
-                Triple("学术镜像 " + Util.host(it), it.trimEnd('/') + "/scholar?hl=zh-CN&q=test", Net.DESKTOP_UA)
-            } + cfg.scihubMirrors.take(4).map {
-                Triple("Sci-Hub " + Util.host(it), it.trimEnd('/') + "/10.1038/nature12373", Net.DESKTOP_UA)
-            }
-
-            val out = coroutineScope {
-                targets.map { (name, url, ua) ->
-                    async(Dispatchers.IO) { diagOne(name, url, ua) }
-                }.awaitAll()
-            }
+            val cfg = RemoteConfig.active.copy(email = store.email.ifEmpty { RemoteConfig.active.email })
+            val out = Diagnostics.run(cfg, cfg.email)
             _diag.value = out
             _diagRunning.value = false
             val bad = out.count { !it.ok }
@@ -203,161 +180,48 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun diagOne(name: String, url: String, ua: String?): DiagItem {
-        val r = Net.diag(url, accept = if (name == "arXiv") "application/atom+xml" else null, uaOverride = ua?.ifEmpty { null })
-        val b0 = r.body.trimStart()
-        val looksJson = b0.startsWith("{") || b0.startsWith("[") || b0.startsWith("<?xml")
-        val raw = r.detail
-        val friendly = Net.friendly(r.detail)
-        val detail = when {
-            name == "梯子链路" -> when {
-                r.ok -> if (Net.proxyOn) "代理可用（节点正常，Google 直通）" else "直连通（没配代理也通，运气好）"
-                Net.proxyOn -> "代理配了但不通：" + friendly + " —— 去 Clash 里测节点延迟、换节点或更新订阅"
-                else -> "没配代理：国内直连 Google 必挂，去上面填端口"
-            }
+    // ── MCP 内嵌服务 ─────────────────────────────────────────
 
-            !r.ok -> friendly
-            name.startsWith("学术镜像") -> {
-                val b = r.body.lowercase()
-                when {
-                    b.contains("gs_ri") -> "能抓到结果"
-                    b.contains("captcha") || b.contains("unusual traffic") -> "被人机验证拦了"
-                    else -> "页面里没有结果结构：" + Net.snippet(r.body, 36)
-                }
-            }
+    val mcpState = com.seagull.paper.mcp.McpHub.state
 
-            name.startsWith("Sci-Hub") -> {
-                val pdf = PdfResolver.findPdfIn(r.body, url)
-                if (pdf != null) "命中全文：" + pdf.take(70) else "页面里没解析出 PDF（库里没有/要人机验证）"
-            }
-
-            name == "doi.org" -> if (looksJson) "返回了 JSON（少见）" else "可达（会跳到出版社页面）"
-            else -> if (looksJson) "正常" else "返回的不是接口数据（被劫持/坏链路）：" + Net.snippet(r.body)
-        }
-        // 判定要和话对上：说「不是接口数据」「没结果结构」「没解析出 PDF」的，就是不通
-        val ok = r.ok && when {
-            name == "梯子链路" -> r.ok
-            name.startsWith("学术镜像") -> detail == "能抓到结果"
-            name.startsWith("Sci-Hub") -> detail.startsWith("命中全文")
-            name == "doi.org" -> true
-            else -> looksJson
-        }
-        val extra = if (!r.ok && raw.isNotBlank() && raw != friendly) " ｜ " + raw.take(48) else ""
-        return DiagItem(name, url, ok, r.ms, detail + extra + " · " + r.ms + "ms")
-    }
-
-    // ── 搜索 ─────────────────────────────────────────────────
-
-    fun search(q: String? = null, more: Boolean = false) {
-        val text = (q ?: _query.value).trim()
-        if (text.isEmpty()) return
-        if (more && lastQuery.isEmpty()) return
-        job?.cancel()
-        page = if (more) page + 1 else 1
-        if (!more) {
-            lastQuery = text
-            seen.clear()
-            _items.value = emptyList()
-            _tasks.value = emptyMap()
-            store.addHistory(text)
-            history.value = store.history()
-        }
-        _query.value = text
-        val list = activeSources
-        if (list.isEmpty()) {
-            _status.value = emptyList()
-            _searching.value = false
-            _tip.value = "没有启用任何源，去设置里开几个"
-            return
-        }
-        _tip.value = ""
-        val query = if (more) lastQuery else text
-        _status.value = list.map { SourceStatus(it.id, it.name, SourceState.RUNNING) }
-        _searching.value = true
-        job = viewModelScope.launch {
-            SearchEngine.stream(list, query, page).collect { ev ->
-                when (ev) {
-                    is SourceEvent.Started -> mark(ev.sourceId, SourceState.RUNNING)
-                    is SourceEvent.Done -> {
-                        mark(
-                            ev.sourceId,
-                            if (ev.items.isEmpty()) SourceState.EMPTY else SourceState.DONE,
-                            ev.items.size, ev.ms, ""
-                        )
-                        merge(ev.items)
-                    }
-
-                    is SourceEvent.Failed -> mark(ev.sourceId, SourceState.FAILED, 0, ev.ms, ev.message)
-                }
-            }
-            _searching.value = false
+    fun setMcpEnabled(on: Boolean) {
+        store.mcpEnabled = on
+        if (on) {
+            store.mcpToken = store.mcpToken.ifEmpty { com.seagull.paper.mcp.McpHub.newToken() }
+            com.seagull.paper.mcp.McpService.start(getApplication())
+        } else {
+            com.seagull.paper.mcp.McpService.stop(getApplication())
+            com.seagull.paper.mcp.McpHub.stop()
         }
     }
 
-    fun stop() {
-        job?.cancel()
-        job = null
-        _searching.value = false
+    fun setMcpPort(port: Int) {
+        store.mcpPort = port
+        restartMcpIfRunning()
     }
 
-    private fun mark(id: String, state: SourceState, count: Int = 0, ms: Long = 0L, msg: String = "") {
-        _status.value = _status.value.map {
-            if (it.id == id) it.copy(state = state, count = count, ms = ms, message = msg) else it
+    fun setMcpToken(token: String) {
+        store.mcpToken = token.trim()
+        restartMcpIfRunning()
+    }
+
+    fun regenMcpToken(): String {
+        val t = com.seagull.paper.mcp.McpHub.newToken()
+        store.mcpToken = t
+        restartMcpIfRunning()
+        return t
+    }
+
+    fun mcpEnabled(): Boolean = store.mcpEnabled
+
+    fun mcpPort(): Int = store.mcpPort
+
+    fun mcpToken(): String = store.mcpToken
+
+    private fun restartMcpIfRunning() {
+        if (mcpState.value.running) {
+            com.seagull.paper.mcp.McpService.start(getApplication())
         }
-    }
-
-    private fun merge(newItems: List<PaperItem>) {
-        val cur = _items.value.toMutableList()
-        for (m in newItems) if (seen.add(m.key)) cur.add(m)
-        _items.value = cur.sortedWith(
-            compareByDescending<PaperItem> { if (it.hasPdf) 1 else 0 }
-                .thenByDescending { it.citations }
-                .thenByDescending { it.year }
-        )
-    }
-
-    // ── 收藏 / 历史 ──────────────────────────────────────────
-
-    fun toggleFav(item: PaperItem): Boolean {
-        val added = store.toggleFav(item)
-        favs.value = store.favs()
-        return added
-    }
-
-    fun wifiOnly(): Boolean = store.wifiOnly
-
-    fun setWifiOnly(on: Boolean) {
-        store.wifiOnly = on
-    }
-
-    fun clearHistory() {
-        store.clearHistory()
-        history.value = emptyList()
-    }
-
-    // ── 配置 ─────────────────────────────────────────────────
-
-    fun refreshConfig() {
-        viewModelScope.launch {
-            _tip.value = "正在拉取源配置…"
-            try {
-                val json = withContext(Dispatchers.IO) { Net.get(RemoteConfig.CONFIG_URL) }
-                RemoteConfig.parse(json)
-                store.setConfigCache(json)
-                rebuildSources(json)
-                val cfg = RemoteConfig.parse(json)
-                _tip.value = "配置已更新：Sci-Hub " + cfg.resolver.scihubMirrors.size +
-                        " 个镜像 · 学术镜像 " + cfg.resolver.scholarMirrors.size + " 个"
-            } catch (e: Exception) {
-                _tip.value = "配置更新失败：" + (e.message ?: "网络错误")
-            }
-        }
-    }
-
-    fun saveEmail(v: String) {
-        store.email = v
-        email = v.trim()
-        RemoteConfig.active = RemoteConfig.active.copy(email = v.trim().ifEmpty { RemoteConfig.active.email })
     }
 
     // ── 下载 ─────────────────────────────────────────────────

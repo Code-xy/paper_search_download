@@ -34,8 +34,8 @@ android {
         applicationId = "com.seagull.paper"
         minSdk = 23
         targetSdk = 35
-        versionCode = pVCode?.toIntOrNull() ?: 6
-        versionName = pVName ?: "1.1.4"
+        versionCode = pVCode?.toIntOrNull() ?: 7
+        versionName = pVName ?: "1.2.0"
         vectorDrawables.useSupportLibrary = true
 
         if (pAbi.isNotEmpty()) {
@@ -124,4 +124,5 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jsoup:jsoup:1.18.1")
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
 }

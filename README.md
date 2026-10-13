@@ -42,3 +42,43 @@
 ## 构建
 
 推 main 触发 GitHub Actions；签名沿用仓库内置 `signing/dev-release.jks`（alias `paper`），保证覆盖升级。
+
+## 内嵌 MCP 服务（v1.2.0）
+
+App 内置一个 MCP 服务器（Kotlin 原生，不依赖 Python），只绑 `127.0.0.1`，给 Claude / Cursor / 任意 Agent 直接调。
+
+- 传输：JSON-RPC 2.0 over **Streamable HTTP**（`POST /mcp`，GET 提供 SSE 保活通道）
+- 地址：`http://127.0.0.1:8765/mcp`（端口可改），可选 Bearer Token
+- 保活：前台服务 + 常驻通知（Android 会杀后台 socket）
+
+### 工具（10 个）
+
+| 工具 | 作用 |
+|---|---|
+| `search_papers` | 并发多源搜索，返回标题/作者/年份/DOI/PDF 直链/摘要 |
+| `list_sources` | 列出可用源与启用状态 |
+| `search_by_doi` | Crossref + OpenAlex 取元数据 |
+| `resolve_pdf` | 跑全文解析链，回候选链接 + 每步结果 |
+| `download_pdf` | 解析并下载到本机，回路径/大小/命中来源 |
+| `list_downloads` | 已下载 PDF 清单 |
+| `read_paper` | PDF 取文本；`mode=sections` 按章节切，支持 offset/max_chars 分段 |
+| `get_citations` | OpenAlex 引文关系（被引 / 参考文献） |
+| `save_to_downloads` | 导出到系统 `Download/学术搜/` |
+| `diagnose` | 网络自检：区分没配代理 / 节点挂了 / 被墙 / 人机验证 / 限流 / 被劫持 |
+
+### 连接方式
+
+```bash
+# 同机（手机上的 Agent）
+http://127.0.0.1:8765/mcp
+
+# PC 用 USB 转发
+adb forward tcp:8765 tcp:8765
+# 然后客户端连 http://127.0.0.1:8765/mcp
+
+# 只支持 stdio 的客户端（Claude Desktop 等）用 supergateway 桥一下
+npx -y supergateway --streamableHttp http://127.0.0.1:8765/mcp --header "Authorization: Bearer <token>"
+```
+
+友好度对齐 `openags/paper-search-mcp` 的工具语义（search_/resolve_/download_/read_），但跑在手机上、复用本 App 的源与解析链，零 Python 依赖。
+
