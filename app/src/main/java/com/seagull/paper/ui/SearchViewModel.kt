@@ -224,6 +224,120 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ── 搜索 ─────────────────────────────────────────────────
+
+    fun search(q: String? = null, more: Boolean = false) {
+        val text = (q ?: _query.value).trim()
+        if (text.isEmpty()) return
+        if (more && lastQuery.isEmpty()) return
+        job?.cancel()
+        page = if (more) page + 1 else 1
+        if (!more) {
+            lastQuery = text
+            seen.clear()
+            _items.value = emptyList()
+            _tasks.value = emptyMap()
+            store.addHistory(text)
+            history.value = store.history()
+        }
+        _query.value = text
+        val list = activeSources
+        if (list.isEmpty()) {
+            _status.value = emptyList()
+            _searching.value = false
+            _tip.value = "没有启用任何源，去设置里开几个"
+            return
+        }
+        _tip.value = ""
+        val query = if (more) lastQuery else text
+        _status.value = list.map { SourceStatus(it.id, it.name, SourceState.RUNNING) }
+        _searching.value = true
+        job = viewModelScope.launch {
+            SearchEngine.stream(list, query, page).collect { ev ->
+                when (ev) {
+                    is SourceEvent.Started -> mark(ev.sourceId, SourceState.RUNNING)
+                    is SourceEvent.Done -> {
+                        mark(
+                            ev.sourceId,
+                            if (ev.items.isEmpty()) SourceState.EMPTY else SourceState.DONE,
+                            ev.items.size, ev.ms, ""
+                        )
+                        merge(ev.items)
+                    }
+
+                    is SourceEvent.Failed -> mark(ev.sourceId, SourceState.FAILED, 0, ev.ms, ev.message)
+                }
+            }
+            _searching.value = false
+        }
+    }
+
+    fun stop() {
+        job?.cancel()
+        job = null
+        _searching.value = false
+    }
+
+    private fun mark(id: String, state: SourceState, count: Int = 0, ms: Long = 0L, msg: String = "") {
+        _status.value = _status.value.map {
+            if (it.id == id) it.copy(state = state, count = count, ms = ms, message = msg) else it
+        }
+    }
+
+    private fun merge(newItems: List<PaperItem>) {
+        val cur = _items.value.toMutableList()
+        for (m in newItems) if (seen.add(m.key)) cur.add(m)
+        _items.value = cur.sortedWith(
+            compareByDescending<PaperItem> { if (it.hasPdf) 1 else 0 }
+                .thenByDescending { it.citations }
+                .thenByDescending { it.year }
+        )
+    }
+
+    // ── 收藏 / 历史 ──────────────────────────────────────────
+
+    fun toggleFav(item: PaperItem): Boolean {
+        val added = store.toggleFav(item)
+        favs.value = store.favs()
+        return added
+    }
+
+    fun wifiOnly(): Boolean = store.wifiOnly
+
+    fun setWifiOnly(on: Boolean) {
+        store.wifiOnly = on
+    }
+
+    fun clearHistory() {
+        store.clearHistory()
+        history.value = emptyList()
+    }
+
+    // ── 配置 ─────────────────────────────────────────────────
+
+    fun refreshConfig() {
+        viewModelScope.launch {
+            _tip.value = "正在拉取源配置…"
+            try {
+                val json = withContext(Dispatchers.IO) { Net.get(RemoteConfig.CONFIG_URL) }
+                RemoteConfig.parse(json)
+                store.setConfigCache(json)
+                rebuildSources(json)
+                val cfg = RemoteConfig.parse(json)
+                _tip.value = "配置已更新：Sci-Hub " + cfg.resolver.scihubMirrors.size +
+                        " 个镜像 · 学术镜像 " + cfg.resolver.scholarMirrors.size + " 个"
+            } catch (e: Exception) {
+                _tip.value = "配置更新失败：" + (e.message ?: "网络错误")
+            }
+        }
+    }
+
+    fun saveEmail(v: String) {
+        store.email = v
+        email = v.trim()
+        RemoteConfig.active = RemoteConfig.active.copy(email = v.trim().ifEmpty { RemoteConfig.active.email })
+    }
+
     // ── 下载 ─────────────────────────────────────────────────
 
     private fun setTask(key: String, st: TaskState) {
