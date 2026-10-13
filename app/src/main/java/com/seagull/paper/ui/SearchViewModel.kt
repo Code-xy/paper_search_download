@@ -173,6 +173,7 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
             val cfg = RemoteConfig.active
             val mail = store.email.ifEmpty { cfg.email }
             val targets = listOf(
+                Triple("梯子链路", "https://www.gstatic.com/generate_204", ""),
                 Triple("arXiv", "http://export.arxiv.org/api/query?search_query=all:test&max_results=1", ""),
                 Triple("OpenAlex", "https://api.openalex.org/works?search=test&per-page=1&mailto=" + Util.encPath(mail), ""),
                 Triple("Crossref", "https://api.crossref.org/works?query=test&rows=1&mailto=" + Util.encPath(mail), ""),
@@ -207,8 +208,16 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         val r = Net.diag(url, accept = if (name == "arXiv") "application/atom+xml" else null, uaOverride = ua?.ifEmpty { null })
         val b0 = r.body.trimStart()
         val looksJson = b0.startsWith("{") || b0.startsWith("[") || b0.startsWith("<?xml")
+        val raw = r.detail
+        val friendly = Net.friendly(r.detail)
         val detail = when {
-            !r.ok -> Net.friendly(r.detail)
+            name == "梯子链路" -> when {
+                r.ok -> if (Net.proxyOn) "代理可用（节点正常，Google 直通）" else "直连通（没配代理也通，运气好）"
+                Net.proxyOn -> "代理配了但不通：" + friendly + " —— 去 Clash 里测节点延迟、换节点或更新订阅"
+                else -> "没配代理：国内直连 Google 必挂，去上面填端口"
+            }
+
+            !r.ok -> friendly
             name.startsWith("学术镜像") -> {
                 val b = r.body.lowercase()
                 when {
@@ -228,12 +237,14 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         }
         // 判定要和话对上：说「不是接口数据」「没结果结构」「没解析出 PDF」的，就是不通
         val ok = r.ok && when {
+            name == "梯子链路" -> r.ok
             name.startsWith("学术镜像") -> detail == "能抓到结果"
             name.startsWith("Sci-Hub") -> detail.startsWith("命中全文")
             name == "doi.org" -> true
             else -> looksJson
         }
-        return DiagItem(name, url, ok, r.ms, detail + " · " + r.ms + "ms")
+        val extra = if (!r.ok && raw.isNotBlank() && raw != friendly) " ｜ " + raw.take(48) else ""
+        return DiagItem(name, url, ok, r.ms, detail + extra + " · " + r.ms + "ms")
     }
 
     // ── 搜索 ─────────────────────────────────────────────────

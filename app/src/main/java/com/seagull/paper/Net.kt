@@ -62,9 +62,15 @@ object Net {
     @Volatile
     private var http: OkHttpClient = build(null, -1)
 
+    @Volatile
+    private var directHttp: OkHttpClient = build(null, -1)
+
     /** 镜像轮询专用：连不上就赶紧下一个，别让 12 秒超时把一次搜索拖死。 */
     @Volatile
     private var httpFast: OkHttpClient = buildFast(null, -1)
+
+    @Volatile
+    private var directFast: OkHttpClient = buildFast(null, -1)
 
     private fun buildFast(proxyHost: String?, proxyPort: Int): OkHttpClient {
         val b = OkHttpClient.Builder()
@@ -95,9 +101,11 @@ object Net {
         val s = proxySpec
             .removePrefix("http://").removePrefix("https://").removePrefix("socks5://").removePrefix("socks://")
             .trim()
+        directHttp = build(null, -1)
+        directFast = buildFast(null, -1)
         if (s.isEmpty()) {
-            http = build(null, -1)
-            httpFast = buildFast(null, -1)
+            http = directHttp
+            httpFast = directFast
             return
         }
         // Clash 用户最常见的输入就是端口号，只填端口默认走 127.0.0.1
@@ -120,6 +128,32 @@ object Net {
     val proxyOn: Boolean
         get() = proxySpec.isNotEmpty() && http.proxy != Proxy.NO_PROXY
 
+    /** 必须过节点的域名（国内直连必挂）。 */
+    private val NEED_PROXY = listOf(
+        "google.", "gstatic.", "googleusercontent.", "sci-hub.", "sci.bban.top", "doi.org",
+        "unpaywall.org", "scholar.", "annas-archive.", "onlinelibrary.wiley.com", "sciencedirect.",
+        "springer.com", "nature.com", "ieeexplore.", "dl.acm.org", "tandfonline.", "jstor.",
+        "sagepub.", "aps.org", "iopscience.", "pubs.acs.org", "rsc.org", "cell.com", "thelancet."
+    )
+
+    /** 国内直连可达的域名：走直连更快，也不受梯子抖动影响。 */
+    private val PREFER_DIRECT = listOf(
+        "openalex.org", "crossref.org", "semanticscholar.org", "doaj.org", "ebi.ac.uk",
+        "arxiv.org", "biorxiv.org", "medrxiv.org", "ncbi.nlm.nih.gov", "europepmc.org",
+        "pubmed.ncbi.nlm.nih.gov", "cnki.net", "wanfangdata.com.cn", "ncpssd.org"
+    )
+
+    private fun hostOf(url: String): String = url.toHttpUrlOrNull()?.host.orEmpty()
+
+    /** 这条请求该走代理还是直连。 */
+    private fun useProxyFor(url: String): Boolean {
+        if (!proxyOn) return false
+        val h = hostOf(url)
+        if (NEED_PROXY.any { h.contains(it, true) }) return true
+        if (PREFER_DIRECT.any { h.contains(it, true) }) return false
+        return true
+    }
+
     /** 把链路上的怪错误翻译成人话。 */
     fun friendly(raw: String): String {
         val s = raw.lowercase()
@@ -140,7 +174,8 @@ object Net {
         401, 403 -> "被拦截(HTTP $code)，可能需要换源或代理"
         404 -> "接口不存在(404)"
         429 -> "请求太频繁(429)，稍后再试"
-        500, 502, 503, 504 -> "服务端故障(HTTP $code)"
+        502, 503, 504 -> "HTTP $code · 上游/代理不可用" + (if (proxyOn) "（梯子节点挂了？去 Clash 里测延迟换节点）" else "")
+        500 -> "服务端故障(HTTP 500)"
         else -> "HTTP $code · " + host(url)
     }
 
@@ -164,34 +199,70 @@ object Net {
         return b.build()
     }
 
-    fun get(url: String, referer: String? = null, accept: String? = null, uaOverride: String? = null): String {
-        http.newCall(request(url, referer, accept, uaOverride)).execute().use { r ->
+    private fun exec(client: OkHttpClient, url: String, referer: String?, accept: String?, ua: String?): String {
+        client.newCall(request(url, referer, accept, ua)).execute().use { r ->
             if (!r.isSuccessful) throw IOException(msg(r.code, url))
             return r.body?.string().orEmpty()
+        }
+    }
+
+    /**
+     * 带链路策略的 GET：必须翻的域名走代理，国内可达的走直连，
+     * 一种不通就自动换另一种再试一次（国内网络下这招能救回一大半源）。
+     */
+    fun get(url: String, referer: String? = null, accept: String? = null, uaOverride: String? = null): String {
+        val wantProxy = useProxyFor(url)
+        val first = if (wantProxy) http else directHttp
+        return try {
+            exec(first, url, referer, accept, uaOverride)
+        } catch (e: IOException) {
+            if (!proxyOn) throw e
+            val alt = if (wantProxy) directHttp else http
+            if (alt === first) throw e
+            exec(alt, url, referer, accept, uaOverride)
         }
     }
 
     fun getJson(url: String, referer: String? = null): String =
         get(url, referer, "application/json, text/plain, */*")
 
-    /** 短超时 GET：给多镜像轮询用。 */
+    /** 短超时 GET：给多镜像轮询用，同样带链路策略。 */
     fun getFast(url: String, referer: String? = null, uaOverride: String? = null): String {
-        httpFast.newCall(request(url, referer, accept = "text/html,application/xhtml+xml,*/*;q=0.8", uaOverride = uaOverride))
-            .execute().use { r ->
-                if (!r.isSuccessful) throw IOException(msg(r.code, url))
-                return r.body?.string().orEmpty()
-            }
+        val accept = "text/html,application/xhtml+xml,*/*;q=0.8"
+        val wantProxy = useProxyFor(url)
+        val first = if (wantProxy) httpFast else directFast
+        return try {
+            exec(first, url, referer, accept, uaOverride)
+        } catch (e: IOException) {
+            if (!proxyOn) throw e
+            val alt = if (wantProxy) directFast else httpFast
+            if (alt === first) throw e
+            exec(alt, url, referer, accept, uaOverride)
+        }
     }
 
     /** 下载/探测用：返回未消费的响应，调用方负责 close。 */
-    fun open(url: String, referer: String? = null, uaOverride: String? = null): Response {
-        val r = http.newCall(request(url, referer, accept = "application/pdf,*/*", uaOverride = uaOverride)).execute()
+    private fun openWith(client: OkHttpClient, url: String, referer: String?, ua: String?): Response {
+        val r = client.newCall(request(url, referer, accept = "application/pdf,*/*", uaOverride = ua)).execute()
         if (!r.isSuccessful) {
             val c = r.code
             r.close()
             throw IOException(msg(c, url))
         }
         return r
+    }
+
+    fun open(url: String, referer: String? = null, uaOverride: String? = null): Response {
+        val wantProxy = useProxyFor(url)
+        val first = if (wantProxy) http else directHttp
+        return try {
+            openWith(first, url, referer, uaOverride)
+        } catch (e: IOException) {
+            if (!proxyOn) throw e
+            val alt = if (wantProxy) directHttp else http
+            if (alt === first) throw e
+            openWith(alt, url, referer, uaOverride)
+        }
     }
 
     /** 只取响应头，判断是不是真 PDF / 有没有被重定向到登录页。 */
@@ -217,8 +288,10 @@ object Net {
 
     fun diag(url: String, accept: String? = null, uaOverride: String? = null): Diag {
         val t0 = System.currentTimeMillis()
+        val wantProxy = useProxyFor(url)
+        val cl = if (wantProxy) http else directHttp
         return try {
-            http.newCall(request(url, accept = accept, uaOverride = uaOverride)).execute().use { r ->
+            cl.newCall(request(url, accept = accept, uaOverride = uaOverride)).execute().use { r ->
                 val ms = System.currentTimeMillis() - t0
                 val body = try {
                     r.peekBody(4096).string()
