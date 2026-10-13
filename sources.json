@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "updated": "2026-10-13",
+  "note": "学术搜远程配置。镜像挂了/被墙只改这个文件，App 点「更新配置」就生效，不用重装。",
+  "resolver": {
+    "email": "seagull@qq.com",
+    "routes": ["unpaywall", "openalex", "europepmc", "preprint", "scihub", "landing"],
+    "_routes_note": "解析顺序。不想要 Sci-Hub 就把 scihub 从数组里删掉；只想用免费正版就留 unpaywall/openalex/europepmc。",
+    "scihubMirrors": [
+      "https://sci-hub.st",
+      "https://sci-hub.se",
+      "https://sci-hub.ru",
+      "https://sci-hub.ee",
+      "https://sci-hub.wf",
+      "https://sci-hub.usualwant.com",
+      "https://sci-hub.hkvisa.net"
+    ],
+    "scholarMirrors": [
+      "https://scholar.google.com",
+      "https://scholar.lanfanshu.cn",
+      "https://sc.panda985.com"
+    ],
+    "timeoutMs": 20000
+  },
+  "preview": {
+    "name": "Google 学术",
+    "searchUrlTemplate": "https://scholar.google.com/scholar?hl=zh-CN&q={q}"
+  },
+  "sites": []
+}
