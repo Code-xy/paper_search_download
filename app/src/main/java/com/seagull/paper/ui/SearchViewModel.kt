@@ -184,7 +184,6 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
                     "https://api.semanticscholar.org/graph/v1/paper/search?query=test&limit=1&fields=title", ""
                 ),
                 Triple("Unpaywall", "https://api.unpaywall.org/v2/10.1038/nature12373?email=" + Util.encPath(mail), ""),
-                Triple("doi.org", "https://doi.org/10.1038/nature12373", "")
             ) + cfg.scholarMirrors.take(2).map {
                 Triple("学术镜像 " + Util.host(it), it.trimEnd('/') + "/scholar?hl=zh-CN&q=test", Net.DESKTOP_UA)
             } + cfg.scihubMirrors.take(4).map {
@@ -223,7 +222,7 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
                 when {
                     b.contains("gs_ri") -> "能抓到结果"
                     b.contains("captcha") || b.contains("unusual traffic") -> "被人机验证拦了"
-                    else -> "返回页面里没有结果结构"
+                    else -> "页面里没有结果结构：" + Net.snippet(r.body, 36)
                 }
             }
 
@@ -233,7 +232,7 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
             }
 
             name == "doi.org" -> if (looksJson) "返回了 JSON（少见）" else "可达（会跳到出版社页面）"
-            else -> if (looksJson) "正常" else "能连上但返回的不是接口数据（被劫持或走了坏链路）"
+            else -> if (looksJson) "正常" else "返回的不是接口数据（被劫持/坏链路）：" + Net.snippet(r.body)
         }
         // 判定要和话对上：说「不是接口数据」「没结果结构」「没解析出 PDF」的，就是不通
         val ok = r.ok && when {

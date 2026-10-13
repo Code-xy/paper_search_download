@@ -206,25 +206,60 @@ object Net {
         }
     }
 
-    /**
-     * 带链路策略的 GET：必须翻的域名走代理，国内可达的走直连，
-     * 一种不通就自动换另一种再试一次（国内网络下这招能救回一大半源）。
-     */
-    fun get(url: String, referer: String? = null, accept: String? = null, uaOverride: String? = null): String {
-        val wantProxy = useProxyFor(url)
-        val first = if (wantProxy) http else directHttp
-        return try {
-            exec(first, url, referer, accept, uaOverride)
-        } catch (e: IOException) {
-            if (!proxyOn) throw e
-            val alt = if (wantProxy) directHttp else http
-            if (alt === first) throw e
-            exec(alt, url, referer, accept, uaOverride)
+    /** 期望的响应类型：接口类要校验真的是 JSON/XML，否则算失败换链路重试。 */
+    enum class Expect { ANY, JSON, XML }
+
+    private fun looksRight(body: String, expect: Expect): Boolean {
+        val b = body.trimStart()
+        return when (expect) {
+            Expect.ANY -> true
+            Expect.JSON -> b.startsWith("{") || b.startsWith("[")
+            Expect.XML -> b.startsWith("<?xml") || b.startsWith("<feed") || b.startsWith("<")
         }
     }
 
+    /**
+     * 带链路策略的 GET：必须翻的域名走代理，国内可达的走直连；
+     * 连接失败、或者返回内容明显不对（被劫持成 HTML 门户页），都自动换另一种链路再试。
+     * 国内网络下这招能救回一大半源。
+     */
+    fun get(
+        url: String,
+        referer: String? = null,
+        accept: String? = null,
+        uaOverride: String? = null,
+        expect: Expect = Expect.ANY
+    ): String {
+        val wantProxy = useProxyFor(url)
+        val first = if (wantProxy) http else directHttp
+        val alt = if (wantProxy) directHttp else http
+        var body0: String? = null
+        var err0: IOException? = null
+        try {
+            body0 = exec(first, url, referer, accept, uaOverride)
+            if (looksRight(body0, expect)) return body0
+        } catch (e: IOException) {
+            err0 = e
+        }
+        if (!proxyOn || alt === first) {
+            throw err0 ?: IOException("返回的不是接口数据：" + snippet(body0.orEmpty()))
+        }
+        val body = exec(alt, url, referer, accept, uaOverride)
+        if (!looksRight(body, expect)) {
+            throw IOException("返回的不是接口数据：" + snippet(body))
+        }
+        return body
+    }
+
+    /** 出错时把响应开头带上，方便一眼看出是谁在返回垃圾。 */
+    fun snippet(body: String, n: Int = 60): String =
+        body.replace(Regex("\\s+"), " ").trim().take(n)
+
     fun getJson(url: String, referer: String? = null): String =
-        get(url, referer, "application/json, text/plain, */*")
+        get(url, referer, "application/json, text/plain, */*", expect = Expect.JSON)
+
+    fun getXml(url: String, referer: String? = null): String =
+        get(url, referer, "application/atom+xml, application/xml, text/xml, */*", expect = Expect.XML)
 
     /** 短超时 GET：给多镜像轮询用，同样带链路策略。 */
     fun getFast(url: String, referer: String? = null, uaOverride: String? = null): String {

@@ -24,7 +24,7 @@ object ArxivSource : PaperSource {
         val start = (page - 1) * PAGE
         val url = "http://export.arxiv.org/api/query?search_query=all:" + Util.encPath(query) +
                 "&start=" + start + "&max_results=" + PAGE + "&sortBy=relevance&sortOrder=descending"
-        val xml = Net.get(url, accept = "application/atom+xml")
+        val xml = Net.getXml(url)
         val doc = Jsoup.parse(xml, "", Parser.xmlParser())
         val out = ArrayList<PaperItem>()
         for (e in doc.select("entry")) {
