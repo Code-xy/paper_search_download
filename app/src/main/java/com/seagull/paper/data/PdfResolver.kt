@@ -56,14 +56,20 @@ object PdfResolver {
         val doi = Util.normDoi(item.doi)
         val routes = cfg.routes.ifEmpty { ResolverConfig.DEFAULT_ROUTES }
 
+        // 多收几个候选：第一个候选挂了还能换下一个（出版社防盗链/重定向循环很常见）
+        val maxCandidates = 3
         for (route in routes) {
-            if (cands.isNotEmpty()) break
+            if (cands.size >= maxCandidates) break
             when (route) {
                 "unpaywall" -> if (doi.isNotEmpty()) {
                     step(onStep, "Unpaywall 查开放获取…")
                     val r = tryUnpaywall(doi, cfg)
                     steps.add(r)
                     if (r.ok) add(r.detail, "Unpaywall", r.src)
+                    if (!r.ok) {
+                        val alt = tryUnpaywallAll(doi, cfg)
+                        alt.forEach { add(it, "Unpaywall", null) }
+                    }
                 }
 
                 "openalex" -> if (doi.isNotEmpty()) {
@@ -144,6 +150,23 @@ object PdfResolver {
             }
         } catch (e: Exception) {
             ResolveStep("Unpaywall", false, e.message ?: "失败")
+        }
+    }
+
+    /** Unpaywall 的 oa_locations 里所有 PDF 链接都收进来，当备用候选。 */
+    private fun tryUnpaywallAll(doi: String, cfg: ResolverConfig): List<String> {
+        return try {
+            val url = "https://api.unpaywall.org/v2/" + Util.encPath(doi) + "?email=" + Util.encPath(cfg.email)
+            val o = JSONObject(Net.getJson(url))
+            val arr = o.optJSONArray("oa_locations") ?: return emptyList()
+            val out = ArrayList<String>()
+            for (i in 0 until arr.length()) {
+                val u = arr.optJSONObject(i)?.optString("url_for_pdf").orEmpty()
+                if (u.startsWith("http")) out.add(u)
+            }
+            out.take(4)
+        } catch (e: Exception) {
+            emptyList()
         }
     }
 

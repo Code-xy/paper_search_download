@@ -370,7 +370,8 @@ class McpTools(private val app: Application) {
             if (f.isFile) return f
             Downloader.list(app).firstOrNull { it.name.equals(path, true) }?.let { return it }
         }
-        val key = args.optString("doi").trim().ifEmpty { args.optString("name").trim() }.lowercase(Locale.US)
+        val key = listOf(args.optString("doi"), args.optString("name"), path)
+            .firstOrNull { it.isNotBlank() }?.trim()?.lowercase(Locale.US).orEmpty()
         if (key.isEmpty()) throw IllegalArgumentException("给 path，或用 doi / name 匹配已下载文件")
         val hit = Downloader.list(app).firstOrNull { it.name.lowercase(Locale.US).contains(key.take(40)) }
         return hit ?: throw IllegalArgumentException("没找到匹配的文件：" + key + "（先 list_downloads 看看有哪些）")
