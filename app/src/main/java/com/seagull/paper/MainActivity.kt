@@ -13,6 +13,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        AppRef.set(application)
         if (Store(this).mcpEnabled) {
             try {
                 McpService.start(this)

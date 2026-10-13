@@ -72,6 +72,13 @@ object Net {
     @Volatile
     private var directFast: OkHttpClient = buildFast(null, -1)
 
+    /** 下 PDF 专用：论文几十 MB、出版社还慢，超时必须放宽，否则一律下不完整。 */
+    @Volatile
+    private var httpLong: OkHttpClient = buildLong(null, -1)
+
+    @Volatile
+    private var directLong: OkHttpClient = buildLong(null, -1)
+
     private fun buildFast(proxyHost: String?, proxyPort: Int): OkHttpClient {
         val b = OkHttpClient.Builder()
             .protocols(listOf(Protocol.HTTP_1_1))
@@ -80,6 +87,22 @@ object Net {
             .callTimeout(12, TimeUnit.SECONDS)
             .followRedirects(true)
             .retryOnConnectionFailure(false)
+            .cookieJar(cookieJar)
+        if (!proxyHost.isNullOrBlank() && proxyPort > 0) {
+            b.proxy(Proxy(Proxy.Type.HTTP, InetSocketAddress(proxyHost, proxyPort)))
+        }
+        return b.build()
+    }
+
+    private fun buildLong(proxyHost: String?, proxyPort: Int): OkHttpClient {
+        val b = OkHttpClient.Builder()
+            .protocols(listOf(Protocol.HTTP_1_1))
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(90, TimeUnit.SECONDS)
+            .callTimeout(240, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .retryOnConnectionFailure(true)
             .cookieJar(cookieJar)
         if (!proxyHost.isNullOrBlank() && proxyPort > 0) {
             b.proxy(Proxy(Proxy.Type.HTTP, InetSocketAddress(proxyHost, proxyPort)))
@@ -103,9 +126,11 @@ object Net {
             .trim()
         directHttp = build(null, -1)
         directFast = buildFast(null, -1)
+        directLong = buildLong(null, -1)
         if (s.isEmpty()) {
             http = directHttp
             httpFast = directFast
+            httpLong = directLong
             return
         }
         // Clash 用户最常见的输入就是端口号，只填端口默认走 127.0.0.1
@@ -114,6 +139,7 @@ object Net {
             if (port in 1..65535) {
                 http = build("127.0.0.1", port)
                 httpFast = buildFast("127.0.0.1", port)
+                httpLong = buildLong("127.0.0.1", port)
                 return
             }
         }
@@ -123,6 +149,7 @@ object Net {
         val useIt = host.isNotEmpty() && port > 0
         http = if (useIt) build(host, port) else build(null, -1)
         httpFast = if (useIt) buildFast(host, port) else buildFast(null, -1)
+        httpLong = if (useIt) buildLong(host, port) else buildLong(null, -1)
     }
 
     val proxyOn: Boolean
@@ -286,6 +313,19 @@ object Net {
             throw IOException(msg(c, url))
         }
         return r
+    }
+
+    /** 下 PDF 用：长超时 + 同一条链路策略与回退。 */
+    fun openLong(url: String, referer: String? = null, uaOverride: String? = null): Response {
+        val wantProxy = useProxyFor(url)
+        val first = if (wantProxy) httpLong else directLong
+        val alt = if (wantProxy) directLong else httpLong
+        return try {
+            openWith(first, url, referer, uaOverride)
+        } catch (e: IOException) {
+            if (!proxyOn || alt === first) throw e
+            openWith(alt, url, referer, uaOverride)
+        }
     }
 
     fun open(url: String, referer: String? = null, uaOverride: String? = null): Response {

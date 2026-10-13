@@ -37,11 +37,14 @@ object GoogleScholarSource : PaperSource {
     override suspend fun search(query: String, page: Int): List<PaperItem> = withContext(Dispatchers.IO) {
         val mirrors = RemoteConfig.active.scholarMirrors
         var lastErr = "没有可用的学术镜像"
+
+        fun urlOf(host: String): String = host.trimEnd('/') + "/scholar?hl=zh-CN&as_sdt=0%2C5&q=" +
+                Util.encPath(query) + "&start=" + (page - 1) * PER_PAGE
+
+        // 第一轮：普通 HTTP（快、省电）
         for (host in mirrors) {
-            val url = host.trimEnd('/') + "/scholar?hl=zh-CN&as_sdt=0%2C5&q=" +
-                    Util.encPath(query) + "&start=" + (page - 1) * PER_PAGE
             try {
-                val html = Net.getFast(url, referer = host + "/", uaOverride = Net.DESKTOP_UA)
+                val html = Net.getFast(urlOf(host), referer = host + "/", uaOverride = Net.DESKTOP_UA)
                 if (looksCaptcha(html)) {
                     lastErr = "Google 学术触发人机验证，换镜像或稍后再试"
                     continue
@@ -51,6 +54,27 @@ object GoogleScholarSource : PaperSource {
                 lastErr = "镜像没出结果：" + Util.host(host)
             } catch (e: Exception) {
                 lastErr = (e.message ?: "请求失败") + " · " + Util.host(host)
+            }
+        }
+
+        // 第二轮：WebView 引擎抓。现在的 Scholar 对陌生客户端会返回「JS 空壳页」，
+        // 纯 HTTP 永远解析不到结果；WebView 是真浏览器，会跑 JS、指纹真实，
+        // 还能复用你在阅读器里过验证码后留下的 Cookie。
+        val app = com.seagull.paper.AppRef.get
+        if (app != null) {
+            for (host in mirrors.take(2)) {
+                val html = com.seagull.paper.web.WebFetcher.fetchHtml(app, urlOf(host), settleMs = 2600L)
+                if (html.isBlank()) {
+                    lastErr = "WebView 打不开：" + Util.host(host)
+                    continue
+                }
+                if (looksCaptcha(html)) {
+                    lastErr = "Google 学术要人机验证：设置页点「打开学术搜索」过一次验证码，之后就能自动抓（Cookie 会留着）"
+                    continue
+                }
+                val items = parse(html, host)
+                if (items.isNotEmpty()) return@withContext items
+                lastErr = "WebView 里也没解析出结果：" + Util.host(host)
             }
         }
         throw IOException(lastErr)

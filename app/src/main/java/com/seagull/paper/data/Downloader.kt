@@ -43,15 +43,53 @@ object Downloader {
         onProgress: (Long, Long) -> Unit = { _, _ -> }
     ): Result = withContext(Dispatchers.IO) {
         if (candidates.isEmpty()) throw IOException("没有可下载的链接")
-        var last: Exception? = null
-        for (c in candidates) {
+        val fails = ArrayList<String>()
+        for ((i, c) in candidates.withIndex()) {
             try {
                 return@withContext fetch(ctx, c, fileName, referer, onProgress)
             } catch (e: Exception) {
-                last = e
+                fails.add((i + 1).toString() + ") " + describe(c, e))
             }
         }
-        throw IOException(last?.message ?: "全部链接都下不动")
+        // 把每个候选挂在哪一步都说清楚，用户才知道是「要订阅」「要梯子」还是「站被掐」
+        throw IOException("候选链接全部失败：\n" + fails.joinToString("\n"))
+    }
+
+    /** 一句话说清这个候选为什么没下成。 */
+    private fun describe(c: Candidate, e: Exception): String {
+        val host = Util.host(c.url).ifEmpty { c.url.take(40) }
+        val why = when {
+            e is PdfResolver.NotPdfException -> e.message.orEmpty()
+            e.message?.contains("follow-up", true) == true -> "重定向循环（服务器要 Cookie 或反爬）"
+            e.message?.contains("403") == true -> "403 被拒（要订阅 / 要梯子 / 防盗链）"
+            e.message?.contains("404", false) == true -> "404 链接已失效"
+            e.message?.contains("too small", true) == true -> "下到的不是 PDF（多半是登录页/门户页）"
+            else -> Net.friendly(e.message ?: e.javaClass.simpleName)
+        }
+        return "[" + c.provider + "] " + host + " — " + why
+    }
+
+    /** 出版社 PDF 常要带着站点 Cookie 才给，第一次被拒就先去访问一次首页再重试。 */
+    private fun openPdf(cand: Candidate, referer: String?): Response {
+        val ref = cand.referer ?: referer
+        return try {
+            Net.openLong(cand.url, ref)
+        } catch (e: IOException) {
+            val u = try {
+                java.net.URI(cand.url)
+            } catch (ex: Exception) {
+                null
+            }
+            val base = if (u?.scheme != null && u.host != null) u.scheme + "://" + u.host + "/" else ""
+            if (base.isNotEmpty() && base != cand.url) {
+                try {
+                    Net.get(base, ref)
+                } catch (ignored: Exception) {
+                    // 预热失败也照样重试一次
+                }
+            }
+            Net.openLong(cand.url, ref)
+        }
     }
 
     private fun fetch(
@@ -61,7 +99,7 @@ object Downloader {
         referer: String?,
         onProgress: (Long, Long) -> Unit
     ): Result {
-        val resp = Net.open(cand.url, cand.referer ?: referer)
+        val resp = openPdf(cand, referer)
         resp.use { r ->
             val body = r.body ?: throw IOException("空响应")
             val ctype = r.header("Content-Type").orEmpty().lowercase()

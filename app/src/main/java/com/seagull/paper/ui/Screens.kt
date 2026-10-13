@@ -491,6 +491,19 @@ private fun SettingsScreen(vm: SearchViewModel) {
             )
         }
 
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Google 学术会拦陌生客户端：出现过人机验证就点下面这个按钮，在弹出的页面里把验证码过掉，" +
+                    "Cookie 会留在 App 里，之后抓取就正常了（这是唯一稳的办法）。",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(6.dp))
+        OutlinedButton(
+            onClick = { Actions.openReader(ctx, "https://scholar.google.com/", "Google 学术") },
+            shape = RoundedCornerShape(12.dp)
+        ) { Text("打开学术搜索（过人机验证）", fontSize = 12.5.sp) }
+
         Spacer(Modifier.height(18.dp))
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         Spacer(Modifier.height(14.dp))
