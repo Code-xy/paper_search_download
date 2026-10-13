@@ -94,6 +94,7 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
     init {
         proxySpec = store.proxy
         Net.setProxyFromSpec(proxySpec)
+        com.seagull.paper.web.WebProxy.apply(proxySpec)
         _disabled.value = store.disabledSources()
         history.value = store.history()
         favs.value = store.favs()
@@ -148,6 +149,7 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         store.proxy = spec
         proxySpec = spec.trim()
         Net.setProxyFromSpec(proxySpec)
+        com.seagull.paper.web.WebProxy.apply(proxySpec)
         if (proxySpec.isEmpty()) {
             _tip.value = "已关闭代理（直连）"
             return

@@ -6,6 +6,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import com.seagull.paper.data.Store
 import com.seagull.paper.mcp.McpService
+import com.seagull.paper.web.WebProxy
 import com.seagull.paper.ui.PaperTheme
 import com.seagull.paper.ui.RootScaffold
 
@@ -14,6 +15,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         AppRef.set(application)
+        WebProxy.apply(Store(this).proxy)
         if (Store(this).mcpEnabled) {
             try {
                 McpService.start(this)
