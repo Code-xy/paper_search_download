@@ -1,5 +1,6 @@
 package com.seagull.paper.data.sources
 
+import android.util.Log
 import com.seagull.paper.Net
 import com.seagull.paper.data.PaperItem
 import com.seagull.paper.data.PaperSource
@@ -48,6 +49,7 @@ object GoogleScholarSource : PaperSource {
         fun urlOf(host: String): String = host.trimEnd('/') + "/scholar?hl=zh-CN&as_sdt=0%2C5&q=" +
                 Util.encPath(query) + "&start=" + (page - 1) * PER_PAGE
 
+        Log.w("PaperSearch", "GS start, mirrors=" + mirrors.size)
         // 第一轮：普通 HTTP（快、省电），最多试 3 个镜像，别把预算耗光
         for (host in mirrors.take(3)) {
             try {
@@ -57,12 +59,14 @@ object GoogleScholarSource : PaperSource {
                     continue
                 }
                 val items = parse(html, host)
+                Log.w("PaperSearch", "GS http " + Util.host(host) + " -> " + items.size + " items, len=" + html.length)
                 if (items.isNotEmpty()) {
                     lastGoodHost = host
                     return@withContext items
                 }
                 lastErr = "镜像没出结果：" + Util.host(host)
             } catch (e: Exception) {
+                Log.w("PaperSearch", "GS http " + Util.host(host) + " FAIL: " + e.message)
                 lastErr = (e.message ?: "请求失败") + " · " + Util.host(host)
             }
         }
@@ -71,10 +75,17 @@ object GoogleScholarSource : PaperSource {
         // 纯 HTTP 永远解析不到结果；WebView 是真浏览器，会跑 JS、指纹真实，
         // 还能复用你在阅读器里过验证码后留下的 Cookie。
         val app = com.seagull.paper.AppRef.get
+        Log.w("PaperSearch", "GS http 全挂 → 上 WebView, app=" + (app != null))
         if (app != null) {
             for (host in mirrors.take(2)) {
+                val t0 = System.currentTimeMillis()
                 val html = com.seagull.paper.web.WebFetcher.fetchHtml(
                     app, urlOf(host), settleMs = 1800L, timeoutMs = 18000L
+                )
+                Log.w(
+                    "PaperSearch",
+                    "GS webview " + Util.host(host) + " -> len=" + html.length +
+                            " in " + (System.currentTimeMillis() - t0) + "ms"
                 )
                 if (html.isBlank()) {
                     lastErr = "WebView 打不开：" + Util.host(host)
@@ -92,6 +103,7 @@ object GoogleScholarSource : PaperSource {
                 lastErr = "WebView 里也没解析出结果（多半是被人机验证拦了）：" + Util.host(host)
             }
         }
+        Log.w("PaperSearch", "GS all failed: " + lastErr)
         throw IOException(lastErr)
     }
 

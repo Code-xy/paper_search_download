@@ -1,6 +1,7 @@
 package com.seagull.paper.web
 
 import android.app.Application
+import android.util.Log
 import android.os.Handler
 import android.os.Looper
 import android.webkit.WebResourceError
@@ -93,6 +94,7 @@ object WebFetcher {
                 cached = web
             }
             val w = web
+            Log.w("PaperSearch", "WF load " + url)
             try {
                 w.settings.javaScriptEnabled = true
                 w.settings.domStorageEnabled = true
@@ -123,11 +125,15 @@ object WebFetcher {
                 }
             }
 
-            main.postDelayed({ finish("", true) }, timeoutMs)
+            main.postDelayed({
+                Log.w("PaperSearch", "WF timeout " + url)
+                finish("", true)
+            }, timeoutMs)
             cont.invokeOnCancellation { main.post { finish("", true) } }
 
             w.loadUrl(url)
         } catch (e: Throwable) {
+            Log.w("PaperSearch", "WF throw " + e.message)
             finish("", false)
         }
     }
