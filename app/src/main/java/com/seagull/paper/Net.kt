@@ -5,6 +5,7 @@ import okhttp3.CookieJar
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
 import java.io.IOException
@@ -41,7 +42,10 @@ object Net {
     }
 
     private fun build(proxyHost: String?, proxyPort: Int): OkHttpClient {
+        // 强制 HTTP/1.1：代理/中间设备对 h2 兼容性差，典型症状
+        // 就是 "Required SETTINGS preface not received"，直接掐掉这类问题。
         val b = OkHttpClient.Builder()
+            .protocols(listOf(Protocol.HTTP_1_1))
             .connectTimeout(14, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .callTimeout(45, TimeUnit.SECONDS)
@@ -64,6 +68,7 @@ object Net {
 
     private fun buildFast(proxyHost: String?, proxyPort: Int): OkHttpClient {
         val b = OkHttpClient.Builder()
+            .protocols(listOf(Protocol.HTTP_1_1))
             .connectTimeout(5, TimeUnit.SECONDS)
             .readTimeout(9, TimeUnit.SECONDS)
             .callTimeout(12, TimeUnit.SECONDS)
@@ -114,6 +119,22 @@ object Net {
 
     val proxyOn: Boolean
         get() = proxySpec.isNotEmpty() && http.proxy != Proxy.NO_PROXY
+
+    /** 把链路上的怪错误翻译成人话。 */
+    fun friendly(raw: String): String {
+        val s = raw.lowercase()
+        return when {
+            s.contains("settings preface") || s.contains("protocol") && s.contains("http/2") ->
+                "链路被中间设备打断（HTTP/2 不兼容，多半没走代理）"
+            s.contains("connection reset") || s.contains("connection closed") || s.contains("unexpected end of stream") ->
+                "连接被重置（被墙/被中间设备掐断，去设置里配代理）"
+            s.contains("unable to resolve host") || s.contains("no address associated") ->
+                "DNS 解析失败（域名被污染）"
+            s.contains("timeout") || s.contains("timed out") -> "超时"
+            s.contains("certificate") || s.contains("ssl") -> "证书错误（可能被中间人劫持）"
+            else -> raw
+        }
+    }
 
     fun msg(code: Int, url: String): String = when (code) {
         401, 403 -> "被拦截(HTTP $code)，可能需要换源或代理"

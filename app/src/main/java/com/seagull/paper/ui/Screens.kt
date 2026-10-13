@@ -565,9 +565,12 @@ private fun SettingsScreen(vm: SearchViewModel) {
         Text("网络自检", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
         Spacer(Modifier.height(4.dp))
         Text(
-            "逐个请求每个源，把失败原因摆出来：被墙 / 人机验证 / 源改版 / 限流，一眼看清。",
+            "逐个请求每个源，把失败原因摆出来：被墙 / 人机验证 / 源改版 / 限流，一眼看清。\n" +
+                    "当前链路：" + (if (vm.proxySpec.isEmpty()) "直连（国内直连 Google/arXiv 基本不通，先配代理）"
+                    else "代理 " + vm.proxySpec),
             fontSize = 12.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = if (vm.proxySpec.isEmpty()) MaterialTheme.colorScheme.error
+            else MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {

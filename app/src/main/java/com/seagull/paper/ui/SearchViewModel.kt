@@ -205,8 +205,10 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun diagOne(name: String, url: String, ua: String?): DiagItem {
         val r = Net.diag(url, accept = if (name == "arXiv") "application/atom+xml" else null, uaOverride = ua?.ifEmpty { null })
+        val b0 = r.body.trimStart()
+        val looksJson = b0.startsWith("{") || b0.startsWith("[") || b0.startsWith("<?xml")
         val detail = when {
-            !r.ok -> r.detail
+            !r.ok -> Net.friendly(r.detail)
             name.startsWith("学术镜像") -> {
                 val b = r.body.lowercase()
                 when {
@@ -218,20 +220,20 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
 
             name.startsWith("Sci-Hub") -> {
                 val pdf = PdfResolver.findPdfIn(r.body, url)
-                if (pdf != null) "命中全文：" + pdf.take(70) else "页面里没解析出 PDF（库里可能没有）"
+                if (pdf != null) "命中全文：" + pdf.take(70) else "页面里没解析出 PDF（库里没有/要人机验证）"
             }
 
-            name == "doi.org" -> if (r.body.isNotEmpty()) "可达（会跳到出版社）" else "可达"
-            else -> {
-                val b = r.body.trimStart()
-                val looksJson = b.startsWith("{") || b.startsWith("[") || b.startsWith("<?xml")
-                when {
-                    looksJson -> "正常"
-                    else -> "能连上但返回的不是接口数据（可能被劫持/需要代理）"
-                }
-            }
+            name == "doi.org" -> if (looksJson) "返回了 JSON（少见）" else "可达（会跳到出版社页面）"
+            else -> if (looksJson) "正常" else "能连上但返回的不是接口数据（被劫持或走了坏链路）"
         }
-        return DiagItem(name, url, r.ok && detail != "返回页面里没有结果结构", r.ms, detail + " · " + r.ms + "ms")
+        // 判定要和话对上：说「不是接口数据」「没结果结构」「没解析出 PDF」的，就是不通
+        val ok = r.ok && when {
+            name.startsWith("学术镜像") -> detail == "能抓到结果"
+            name.startsWith("Sci-Hub") -> detail.startsWith("命中全文")
+            name == "doi.org" -> true
+            else -> looksJson
+        }
+        return DiagItem(name, url, ok, r.ms, detail + " · " + r.ms + "ms")
     }
 
     // ── 搜索 ─────────────────────────────────────────────────
