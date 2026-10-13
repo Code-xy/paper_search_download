@@ -2,7 +2,9 @@ package com.seagull.paper.ui
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -97,7 +99,14 @@ fun Pill(text: String, fg: Color, bg: Color) {
 }
 
 @Composable
-fun SourceStatusStrip(list: List<SourceStatus>) {
+fun SourceFilterRow(
+    list: List<SourceStatus>,
+    counts: Map<String, Int>,
+    total: Int,
+    filter: String,
+    onPick: (String) -> Unit,
+    onError: (SourceStatus) -> Unit
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -106,8 +115,19 @@ fun SourceStatusStrip(list: List<SourceStatus>) {
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        FilterChip(
+            label = "全部 " + total,
+            bg = if (filter.isEmpty()) MaterialTheme.colorScheme.primaryContainer
+            else MaterialTheme.colorScheme.surfaceVariant,
+            fg = if (filter.isEmpty()) MaterialTheme.colorScheme.onPrimaryContainer
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            selected = filter.isEmpty(),
+            spinner = false,
+            onClick = { onPick("") }
+        )
         for (s in list) {
             val cs = MaterialTheme.colorScheme
+            val n = counts[s.id] ?: 0
             val bg: Color = when (s.state) {
                 SourceState.RUNNING -> cs.primaryContainer
                 SourceState.DONE -> cs.secondaryContainer
@@ -123,28 +143,53 @@ fun SourceStatusStrip(list: List<SourceStatus>) {
                 SourceState.IDLE -> cs.onSurfaceVariant
             }
             val label = when (s.state) {
-                SourceState.RUNNING -> s.name + " 搜索中"
-                SourceState.DONE -> s.name + " " + s.count
-                SourceState.EMPTY -> s.name + " 无结果"
+                SourceState.RUNNING -> s.name + " …"
+                SourceState.DONE -> s.name + " " + n
+                SourceState.EMPTY -> s.name + " 0"
                 SourceState.FAILED -> s.name + " 失败"
                 SourceState.IDLE -> s.name
             }
-            Surface(color = bg, shape = RoundedCornerShape(8.dp)) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (s.state == SourceState.RUNNING) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(9.dp),
-                            strokeWidth = 1.4.dp,
-                            color = fg
-                        )
-                        Spacer(Modifier.width(5.dp))
-                    }
-                    Text(label, color = fg, fontSize = 11.sp, maxLines = 1)
-                }
+            FilterChip(
+                label = label,
+                bg = bg,
+                fg = fg,
+                selected = filter == s.id,
+                spinner = s.state == SourceState.RUNNING,
+                onClick = {
+                    if (s.state == SourceState.FAILED) onError(s) else onPick(s.id)
+                },
+                onLongClick = { onError(s) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun FilterChip(
+    label: String,
+    bg: Color,
+    fg: Color,
+    selected: Boolean,
+    spinner: Boolean,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null
+) {
+    val cs = MaterialTheme.colorScheme
+    Surface(
+        color = bg,
+        shape = RoundedCornerShape(9.dp),
+        border = if (selected) BorderStroke(1.5.dp, cs.primary) else null,
+        modifier = Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (spinner) {
+                CircularProgressIndicator(modifier = Modifier.size(9.dp), strokeWidth = 1.4.dp, color = fg)
+                Spacer(Modifier.width(5.dp))
             }
+            Text(label, color = fg, fontSize = 11.5.sp, maxLines = 1)
         }
     }
 }

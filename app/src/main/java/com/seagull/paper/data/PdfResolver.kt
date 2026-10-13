@@ -6,10 +6,16 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.IOException
 
-/** 一个可下载的候选链接，附命中来源。 */
-data class Candidate(val url: String, val provider: String)
+/** 一个可下载的候选链接，附命中来源和该带上的 Referer（有些 PDF 站防盗链）。 */
+data class Candidate(val url: String, val provider: String, val referer: String? = null)
 
-data class ResolveStep(val provider: String, val ok: Boolean, val detail: String)
+data class ResolveStep(
+    val provider: String,
+    val ok: Boolean,
+    val detail: String,
+    /** 命中源自身的地址，用作下载 Referer。 */
+    val src: String? = null
+)
 
 data class ResolveResult(val candidates: List<Candidate>, val steps: List<ResolveStep>) {
     val best: Candidate? get() = candidates.firstOrNull()
@@ -35,9 +41,9 @@ object PdfResolver {
         val cands = LinkedHashMap<String, Candidate>()
         val steps = ArrayList<ResolveStep>()
 
-        fun add(url: String?, provider: String) {
+        fun add(url: String?, provider: String, referer: String? = null) {
             val u = url?.trim().orEmpty()
-            if (u.startsWith("http") && !cands.containsKey(u)) cands[u] = Candidate(u, provider)
+            if (u.startsWith("http") && !cands.containsKey(u)) cands[u] = Candidate(u, provider, referer)
         }
 
         // 0) 源里已经带了直链
@@ -57,50 +63,56 @@ object PdfResolver {
                     step(onStep, "Unpaywall 查开放获取…")
                     val r = tryUnpaywall(doi, cfg)
                     steps.add(r)
-                    if (r.ok) add(r.detail, "Unpaywall")
+                    if (r.ok) add(r.detail, "Unpaywall", r.src)
                 }
 
                 "openalex" -> if (doi.isNotEmpty()) {
                     step(onStep, "OpenAlex 查 OA 链接…")
                     val r = tryOpenAlex(doi, cfg)
                     steps.add(r)
-                    if (r.ok) add(r.detail, "OpenAlex")
+                    if (r.ok) add(r.detail, "OpenAlex", r.src)
                 }
 
                 "europepmc" -> {
                     step(onStep, "Europe PMC 查全文…")
                     val r = tryEuropePmc(item, doi)
                     steps.add(r)
-                    if (r.ok) add(r.detail, "Europe PMC")
+                    if (r.ok) add(r.detail, "Europe PMC", r.src)
                 }
 
                 "preprint" -> {
                     step(onStep, "试预印本直链…")
                     val r = tryPreprint(doi, item.title)
                     steps.add(r)
-                    if (r.ok) add(r.detail, "预印本")
+                    if (r.ok) add(r.detail, "预印本", r.src)
                 }
 
                 "scihub" -> if (doi.isNotEmpty() && cfg.scihubMirrors.isNotEmpty()) {
                     step(onStep, "Sci-Hub 镜像轮询…")
                     val r = trySciHub(doi, cfg, onStep)
                     steps.add(r)
-                    if (r.ok) add(r.detail, "Sci-Hub")
+                    if (r.ok) add(r.detail, "Sci-Hub", r.src)
                 }
 
                 "landing" -> {
                     step(onStep, "解析落地页找 PDF…")
                     val r = tryLanding(item, doi)
                     steps.add(r)
-                    if (r.ok) add(r.detail, "落地页")
+                    if (r.ok) add(r.detail, "落地页", r.src)
                 }
             }
         }
 
-        // 兜底：DOI 本身当候选，交给下载器去看是不是 PDF
-        if (cands.isEmpty() && doi.isNotEmpty()) {
-            add(Util.doiUrl(doi), "DOI")
-            steps.add(ResolveStep("DOI 兜底", false, "前几环都没抓到直链，直接用 DOI 试"))
+        // 注意：不要把 doi.org 当候选——它永远返回落地页 HTML，
+        // 只会让用户看到「DOI 返回的不是 PDF」这种假失败。抓不到就是抓不到。
+        if (cands.isEmpty()) {
+            steps.add(
+                ResolveStep(
+                    "结论", false,
+                    if (doi.isEmpty()) "这条没有 DOI，只能靠落地页，页面里也没找到 PDF"
+                    else "该文在各环节都没有免费全文（出版社付费墙，且 Sci-Hub 库里没有/镜像不可用）"
+                )
+            )
         }
 
         ResolveResult(cands.values.toList(), steps)
@@ -170,13 +182,17 @@ object PdfResolver {
                         val u = list.optJSONObject(k) ?: continue
                         val uu = u.optString("url").trim()
                         if (u.optString("documentStyle") == "pdf" && uu.startsWith("http")) {
-                            return ResolveStep("Europe PMC", true, uu)
+                            return ResolveStep("Europe PMC", true, uu, "https://europepmc.org/")
                         }
                     }
                 }
                 val pmcid = o.optString("pmcid").trim()
                 if (pmcid.isNotEmpty()) {
-                    return ResolveStep("Europe PMC", true, "https://europepmc.org/articles/" + pmcid + "?pdf=render")
+                    return ResolveStep(
+                        "Europe PMC", true,
+                        "https://europepmc.org/articles/" + pmcid + "?pdf=render",
+                        "https://europepmc.org/"
+                    )
                 }
             }
             ResolveStep("Europe PMC", false, "没有免费全文")
@@ -190,7 +206,8 @@ object PdfResolver {
         if (doi.isEmpty()) return ResolveStep("预印本", false, "没有 DOI")
         return when {
             doi.startsWith("10.1101/") -> ResolveStep(
-                "预印本", true, "https://www.biorxiv.org/content/" + doi + "v1.full.pdf"
+                "预印本", true, "https://www.biorxiv.org/content/" + doi + "v1.full.pdf",
+                "https://www.biorxiv.org/"
             )
 
             doi.contains("10.48550/arxiv", true) -> {
@@ -210,7 +227,7 @@ object PdfResolver {
             val variants = listOf(base + "/" + doi, base + "/" + Util.doiUrl(doi))
             for (v in variants) {
                 try {
-                    val html = Net.get(v, referer = base + "/", uaOverride = Net.DESKTOP_UA)
+                    val html = Net.getFast(v, referer = base + "/", uaOverride = Net.DESKTOP_UA)
                     val low = html.lowercase()
                     if (low.contains("article not found") || low.contains("статья не найдена")) {
                         errs.add(Util.host(base) + " 库里没有")
@@ -221,7 +238,7 @@ object PdfResolver {
                         break
                     }
                     val pdf = findPdfIn(html, v)
-                    if (pdf != null) return ResolveStep("Sci-Hub", true, pdf)
+                    if (pdf != null) return ResolveStep("Sci-Hub", true, pdf, base + "/")
                     errs.add(Util.host(base) + " 页面没解析出 PDF")
                     break
                 } catch (e: Exception) {
@@ -242,7 +259,7 @@ object PdfResolver {
                 if (Util.looksPdf(u)) return ResolveStep("落地页", true, u)
                 val html = Net.get(u, uaOverride = Net.DESKTOP_UA)
                 val pdf = findPdfIn(html, u)
-                if (pdf != null) return ResolveStep("落地页", true, pdf)
+                if (pdf != null) return ResolveStep("落地页", true, pdf, u)
                 errs.add(Util.host(u) + " 页面里没有 PDF 链接")
             } catch (e: Exception) {
                 errs.add(Util.host(u) + " " + (e.message ?: "失败"))

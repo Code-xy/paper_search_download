@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -60,6 +61,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.seagull.paper.data.PaperItem
+import com.seagull.paper.data.SourceStatus
 import com.seagull.paper.data.TaskState
 import com.seagull.paper.data.Util
 import java.io.File
@@ -136,7 +138,11 @@ private fun SearchScreen(vm: SearchViewModel) {
     val favs by vm.favs.collectAsStateWithLifecycle()
     val tip by vm.tip.collectAsStateWithLifecycle()
     val tasks by vm.tasks.collectAsStateWithLifecycle()
+    val filter by vm.filter.collectAsStateWithLifecycle()
     var detail by remember { mutableStateOf<PaperItem?>(null) }
+    var errStatus by remember { mutableStateOf<SourceStatus?>(null) }
+    val counts = items.groupingBy { it.sourceId }.eachCount()
+    val shown = if (filter.isEmpty()) items else items.filter { it.sourceId == filter }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 14.dp)) {
         Spacer(Modifier.height(4.dp))
@@ -152,20 +158,41 @@ private fun SearchScreen(vm: SearchViewModel) {
         Spacer(Modifier.height(10.dp))
 
         if (status.isNotEmpty()) {
-            SourceStatusStrip(status)
-            Spacer(Modifier.height(10.dp))
+            SourceFilterRow(
+                list = status,
+                counts = counts,
+                total = items.size,
+                filter = filter,
+                onPick = { vm.setFilter(it) },
+                onError = { errStatus = it }
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                if (filter.isEmpty()) "点源名只看了它一家，长按看失败原因" else "只看：" + (status.firstOrNull { it.id == filter }?.name ?: filter) + "（点「全部」返回）",
+                fontSize = 10.5.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(8.dp))
         }
 
         when {
-            items.isEmpty() && !searching -> EmptyZone(
+            shown.isEmpty() && !searching && filter.isEmpty() -> EmptyZone(
                 history = history,
                 tip = tip,
                 onPick = { vm.search(it) },
                 onClear = { vm.clearHistory() }
             )
 
-            items.isEmpty() -> Box(Modifier.fillMaxSize(), Alignment.Center) {
+            shown.isEmpty() && searching -> Box(Modifier.fillMaxSize(), Alignment.Center) {
                 CircularProgressIndicator()
+            }
+
+            shown.isEmpty() -> Box(Modifier.fillMaxSize(), Alignment.Center) {
+                Text(
+                    "这个源这次没结果（长按它的芯片看原因）",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
             else -> LazyColumn(
@@ -173,7 +200,7 @@ private fun SearchScreen(vm: SearchViewModel) {
                 contentPadding = PaddingValues(bottom = 20.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                items(items, key = { it.key }) { item ->
+                items(shown, key = { it.key }) { item ->
                     PaperCard(
                         item = item,
                         task = tasks[item.key],
@@ -230,6 +257,21 @@ private fun SearchScreen(vm: SearchViewModel) {
                 val t = if (d.doi.isNotEmpty()) d.title + "\n" + Util.doiUrl(d.doi) else d.title
                 Actions.share(ctx, t)
             }
+        )
+    }
+
+    errStatus?.let { st ->
+        AlertDialog(
+            onDismissRequest = { errStatus = null },
+            title = { Text(st.name + " 失败了", fontSize = 15.sp) },
+            text = {
+                Text(
+                    st.message.ifEmpty { "没有返回错误信息" } +
+                            "\n\n常见原因：源被墙（去设置里配代理）、源改版、限流。设置页「网络自检」能一次看清所有源。",
+                    fontSize = 12.5.sp
+                )
+            },
+            confirmButton = { TextButton(onClick = { errStatus = null }) { Text("知道了") } }
         )
     }
 }
@@ -413,6 +455,9 @@ private fun SettingsScreen(vm: SearchViewModel) {
     val tip by vm.tip.collectAsStateWithLifecycle()
     var mail by remember { mutableStateOf(vm.email) }
     var wifiOnly by remember { mutableStateOf(vm.wifiOnly()) }
+    var proxy by remember { mutableStateOf(vm.proxySpec) }
+    val diag by vm.diag.collectAsStateWithLifecycle()
+    val diagRunning by vm.diagRunning.collectAsStateWithLifecycle()
 
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 14.dp)
@@ -477,6 +522,103 @@ private fun SettingsScreen(vm: SearchViewModel) {
                 vm.setWifiOnly(it)
             }
         )
+
+        Spacer(Modifier.height(18.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Spacer(Modifier.height(14.dp))
+
+        Text("梯子 / 代理", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "手机上的 Clash / V2Ray 大多是「HTTP 代理」，不是全局 VPN。App 不显式走它 = 直连，" +
+                    "直连 Google 学术、arXiv 这些基本必挂。填你梯子的 HTTP 代理地址，例：127.0.0.1:7890。" +
+                    "Clash 的 mixed 端口也能填成 socks5://127.0.0.1:7890。留空 = 直连。",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = proxy,
+            onValueChange = { proxy = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            placeholder = { Text("127.0.0.1:7890", fontSize = 13.sp) },
+            shape = RoundedCornerShape(14.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedContainerColor = MaterialTheme.colorScheme.surface,
+                unfocusedContainerColor = MaterialTheme.colorScheme.surface
+            )
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Button(onClick = { vm.saveProxy(proxy) }, shape = RoundedCornerShape(12.dp)) {
+                Text("保存并生效")
+            }
+            Text(
+                if (vm.proxySpec.isEmpty()) "当前：直连" else "当前：走代理 " + vm.proxySpec,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        Spacer(Modifier.height(18.dp))
+        Text("网络自检", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "逐个请求每个源，把失败原因摆出来：被墙 / 人机验证 / 源改版 / 限流，一眼看清。",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = { vm.runDiag() },
+                enabled = !diagRunning,
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                if (diagRunning) {
+                    CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.size(6.dp))
+                    Text("自检中…")
+                } else {
+                    Text("开始自检")
+                }
+            }
+            if (diag.isNotEmpty()) {
+                Text(
+                    "通 " + diag.count { it.ok } + " / 共 " + diag.size,
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        if (diag.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            for (d in diag) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp, if (d.ok) MaterialTheme.colorScheme.outlineVariant else MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                        Text(
+                            (if (d.ok) "✅ " else "❌ ") + d.name,
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            d.detail,
+                            fontSize = 11.sp,
+                            color = if (d.ok) MaterialTheme.colorScheme.onSurfaceVariant
+                            else MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            }
+        }
 
         Spacer(Modifier.height(18.dp))
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)

@@ -41,7 +41,7 @@ object GoogleScholarSource : PaperSource {
             val url = host.trimEnd('/') + "/scholar?hl=zh-CN&as_sdt=0%2C5&q=" +
                     Util.encPath(query) + "&start=" + (page - 1) * PER_PAGE
             try {
-                val html = Net.get(url, referer = host + "/", uaOverride = Net.DESKTOP_UA)
+                val html = Net.getFast(url, referer = host + "/", uaOverride = Net.DESKTOP_UA)
                 if (looksCaptcha(html)) {
                     lastErr = "Google 学术触发人机验证，换镜像或稍后再试"
                     continue

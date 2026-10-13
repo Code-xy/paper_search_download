@@ -61,7 +61,7 @@ object Downloader {
         referer: String?,
         onProgress: (Long, Long) -> Unit
     ): Result {
-        val resp = Net.open(cand.url, referer)
+        val resp = Net.open(cand.url, cand.referer ?: referer)
         resp.use { r ->
             val body = r.body ?: throw IOException("空响应")
             val ctype = r.header("Content-Type").orEmpty().lowercase()

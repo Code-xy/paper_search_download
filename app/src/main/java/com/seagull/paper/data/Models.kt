@@ -72,3 +72,12 @@ data class TaskState(
         get() = if (total > 0L) Util.fmtSize(done) + " / " + Util.fmtSize(total)
         else if (done > 0L) Util.fmtSize(done) else ""
 }
+
+/** 网络自检结果：一个目标的连通性/错误原因。 */
+data class DiagItem(
+    val name: String,
+    val url: String,
+    val ok: Boolean,
+    val ms: Long,
+    val detail: String
+)

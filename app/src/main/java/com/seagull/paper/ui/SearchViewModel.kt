@@ -7,6 +7,7 @@ import android.net.NetworkCapabilities
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.seagull.paper.Net
+import com.seagull.paper.data.DiagItem
 import com.seagull.paper.data.Downloader
 import com.seagull.paper.data.PaperItem
 import com.seagull.paper.data.PaperSource
@@ -24,6 +25,9 @@ import com.seagull.paper.data.TaskState
 import com.seagull.paper.data.Util
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -61,11 +65,24 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
     private val _tip = MutableStateFlow("")
     val tip = _tip.asStateFlow()
 
+    /** "" = 全部源；否则只看这一个源的结果。 */
+    private val _filter = MutableStateFlow("")
+    val filter = _filter.asStateFlow()
+
+    private val _diag = MutableStateFlow<List<DiagItem>>(emptyList())
+    val diag = _diag.asStateFlow()
+
+    private val _diagRunning = MutableStateFlow(false)
+    val diagRunning = _diagRunning.asStateFlow()
+
     val previewSite = MutableStateFlow(PreviewSite())
     val history = MutableStateFlow<List<String>>(emptyList())
     val favs = MutableStateFlow<List<PaperItem>>(emptyList())
 
     var email: String = ""
+        private set
+
+    var proxySpec: String = ""
         private set
 
     private var job: Job? = null
@@ -74,6 +91,8 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
     private val seen = HashSet<String>()
 
     init {
+        proxySpec = store.proxy
+        Net.setProxyFromSpec(proxySpec)
         _disabled.value = store.disabledSources()
         history.value = store.history()
         favs.value = store.favs()
@@ -115,6 +134,93 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setQuery(q: String) { _query.value = q }
+
+    fun setFilter(id: String) { _filter.value = id }
+
+    /** 每个源当前命中多少条，给筛选芯片显示数量。 */
+    fun countOf(sourceId: String): Int = _items.value.count { it.sourceId == sourceId }
+
+    fun visibleItems(): List<PaperItem> =
+        if (_filter.value.isEmpty()) _items.value else _items.value.filter { it.sourceId == _filter.value }
+
+    fun saveProxy(spec: String) {
+        store.proxy = spec
+        proxySpec = spec.trim()
+        Net.setProxyFromSpec(proxySpec)
+        _tip.value = if (proxySpec.isEmpty()) "已关闭代理（直连）" else "代理已启用：" + proxySpec
+    }
+
+    /** 网络自检：把每个源的失败原因摊开，别只给用户看一个「失败」。 */
+    fun runDiag() {
+        if (_diagRunning.value) return
+        _diagRunning.value = true
+        _diag.value = emptyList()
+        val ctx = getApplication<Application>()
+        viewModelScope.launch {
+            val cfg = RemoteConfig.active
+            val mail = store.email.ifEmpty { cfg.email }
+            val targets = listOf(
+                Triple("arXiv", "http://export.arxiv.org/api/query?search_query=all:test&max_results=1", ""),
+                Triple("OpenAlex", "https://api.openalex.org/works?search=test&per-page=1&mailto=" + Util.encPath(mail), ""),
+                Triple("Crossref", "https://api.crossref.org/works?query=test&rows=1&mailto=" + Util.encPath(mail), ""),
+                Triple("Europe PMC", "https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=test&format=json&pageSize=1", ""),
+                Triple("DOAJ", "https://doaj.org/api/search/articles/test?pageSize=1", ""),
+                Triple(
+                    "Semantic Scholar",
+                    "https://api.semanticscholar.org/graph/v1/paper/search?query=test&limit=1&fields=title", ""
+                ),
+                Triple("Unpaywall", "https://api.unpaywall.org/v2/10.1038/nature12373?email=" + Util.encPath(mail), ""),
+                Triple("doi.org", "https://doi.org/10.1038/nature12373", "")
+            ) + cfg.scholarMirrors.take(2).map {
+                Triple("学术镜像 " + Util.host(it), it.trimEnd('/') + "/scholar?hl=zh-CN&q=test", Net.DESKTOP_UA)
+            } + cfg.scihubMirrors.take(4).map {
+                Triple("Sci-Hub " + Util.host(it), it.trimEnd('/') + "/10.1038/nature12373", Net.DESKTOP_UA)
+            }
+
+            val out = coroutineScope {
+                targets.map { (name, url, ua) ->
+                    async(Dispatchers.IO) { diagOne(name, url, ua) }
+                }.awaitAll()
+            }
+            _diag.value = out
+            _diagRunning.value = false
+            val bad = out.count { !it.ok }
+            _tip.value = if (bad == 0) "自检全通（" + out.size + " 项）"
+            else "自检完成：" + bad + "/" + out.size + " 项不通，红字就是原因"
+        }
+    }
+
+    private fun diagOne(name: String, url: String, ua: String?): DiagItem {
+        val r = Net.diag(url, accept = if (name == "arXiv") "application/atom+xml" else null, uaOverride = ua?.ifEmpty { null })
+        val detail = when {
+            !r.ok -> r.detail
+            name.startsWith("学术镜像") -> {
+                val b = r.body.lowercase()
+                when {
+                    b.contains("gs_ri") -> "能抓到结果"
+                    b.contains("captcha") || b.contains("unusual traffic") -> "被人机验证拦了"
+                    else -> "返回页面里没有结果结构"
+                }
+            }
+
+            name.startsWith("Sci-Hub") -> {
+                val pdf = PdfResolver.findPdfIn(r.body, url)
+                if (pdf != null) "命中全文：" + pdf.take(70) else "页面里没解析出 PDF（库里可能没有）"
+            }
+
+            name == "Semantic Scholar" -> if (r.body.contains(""data"")) "正常" else "返回异常内容"
+            name == "doi.org" -> if (r.body.isNotEmpty()) "可达（会跳到出版社）" else "可达"
+            else -> {
+                val b = r.body.trimStart()
+                val looksJson = b.startsWith("{") || b.startsWith("[") || b.startsWith("<?xml")
+                when {
+                    looksJson -> "正常"
+                    else -> "能连上但返回的不是接口数据（可能被劫持/需要代理）"
+                }
+            }
+        }
+        return DiagItem(name, url, r.ok && detail != "返回页面里没有结果结构", r.ms, detail + " · " + r.ms + "ms")
+    }
 
     // ── 搜索 ─────────────────────────────────────────────────
 

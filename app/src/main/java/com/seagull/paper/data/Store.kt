@@ -114,6 +114,11 @@ class Store(ctx: Context) {
         get() = sp.getBoolean(KEY_SCIHUB, true)
         set(v) = sp.edit().putBoolean(KEY_SCIHUB, v).apply()
 
+    /** 梯子的 HTTP 代理，例如 127.0.0.1:7890；空=直连。 */
+    var proxy: String
+        get() = sp.getString(KEY_PROXY, "").orEmpty()
+        set(v) = sp.edit().putString(KEY_PROXY, v.trim()).apply()
+
     var wifiOnly: Boolean
         get() = sp.getBoolean(KEY_WIFI, false)
         set(v) = sp.edit().putBoolean(KEY_WIFI, v).apply()
@@ -127,5 +132,6 @@ class Store(ctx: Context) {
         const val KEY_AUTO = "autoResolve"
         const val KEY_SCIHUB = "scihub"
         const val KEY_WIFI = "wifiOnly"
+        const val KEY_PROXY = "proxy"
     }
 }

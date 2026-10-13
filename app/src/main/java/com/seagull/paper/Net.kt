@@ -1,10 +1,15 @@
 package com.seagull.paper
 
+import okhttp3.Cookie
+import okhttp3.CookieJar
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import java.io.IOException
+import java.net.InetSocketAddress
+import java.net.Proxy
 import java.util.concurrent.TimeUnit
 
 /**
@@ -25,14 +30,81 @@ object Net {
 
     fun ua(): String = UAS[((System.currentTimeMillis() / 1000L) % UAS.size).toInt()]
 
-    val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(12, TimeUnit.SECONDS)
-        .readTimeout(25, TimeUnit.SECONDS)
-        .callTimeout(35, TimeUnit.SECONDS)
-        .followRedirects(true)
-        .followSslRedirects(true)
-        .retryOnConnectionFailure(true)
-        .build()
+    /** 会话 Cookie：出版社落地页/学术镜像常靠它维持状态。 */
+    private val cookieJar = object : CookieJar {
+        private val store = HashMap<String, List<Cookie>>()
+        override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+            if (cookies.isNotEmpty()) store[url.host] = cookies
+        }
+
+        override fun loadForRequest(url: HttpUrl): List<Cookie> = store[url.host].orEmpty()
+    }
+
+    private fun build(proxyHost: String?, proxyPort: Int): OkHttpClient {
+        val b = OkHttpClient.Builder()
+            .connectTimeout(14, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .callTimeout(45, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .retryOnConnectionFailure(true)
+            .cookieJar(cookieJar)
+        if (!proxyHost.isNullOrBlank() && proxyPort > 0) {
+            b.proxy(Proxy(Proxy.Type.HTTP, InetSocketAddress(proxyHost, proxyPort)))
+        }
+        return b.build()
+    }
+
+    @Volatile
+    private var http: OkHttpClient = build(null, -1)
+
+    /** 镜像轮询专用：连不上就赶紧下一个，别让 12 秒超时把一次搜索拖死。 */
+    @Volatile
+    private var httpFast: OkHttpClient = buildFast(null, -1)
+
+    private fun buildFast(proxyHost: String?, proxyPort: Int): OkHttpClient {
+        val b = OkHttpClient.Builder()
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(9, TimeUnit.SECONDS)
+            .callTimeout(12, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .retryOnConnectionFailure(false)
+            .cookieJar(cookieJar)
+        if (!proxyHost.isNullOrBlank() && proxyPort > 0) {
+            b.proxy(Proxy(Proxy.Type.HTTP, InetSocketAddress(proxyHost, proxyPort)))
+        }
+        return b.build()
+    }
+
+    @Volatile
+    var proxySpec: String = ""
+        private set
+
+    /**
+     * 设置代理。手机上的 Clash/V2Ray 大多是「HTTP 代理」而不是全局 VPN，
+     * App 不显式走它就一直直连——国内直连 Google 学术/arXiv 基本必挂。
+     * 接受 "127.0.0.1:7890" / "http://127.0.0.1:7890" / "socks5://127.0.0.1:7891"（socks 按 HTTP 代理端口也能通 Clash 的 mixed 端口）。
+     */
+    fun setProxyFromSpec(spec: String) {
+        proxySpec = spec.trim()
+        val s = proxySpec
+            .removePrefix("http://").removePrefix("https://").removePrefix("socks5://").removePrefix("socks://")
+            .trim()
+        if (s.isEmpty()) {
+            http = build(null, -1)
+            httpFast = buildFast(null, -1)
+            return
+        }
+        val parts = s.split(":")
+        val host = parts.getOrNull(0).orEmpty().trim()
+        val port = parts.getOrNull(1)?.trim()?.toIntOrNull() ?: -1
+        val useIt = host.isNotEmpty() && port > 0
+        http = if (useIt) build(host, port) else build(null, -1)
+        httpFast = if (useIt) buildFast(host, port) else buildFast(null, -1)
+    }
+
+    val proxyOn: Boolean
+        get() = proxySpec.isNotEmpty() && http.proxy != Proxy.NO_PROXY
 
     fun msg(code: Int, url: String): String = when (code) {
         401, 403 -> "被拦截(HTTP $code)，可能需要换源或代理"
@@ -63,7 +135,7 @@ object Net {
     }
 
     fun get(url: String, referer: String? = null, accept: String? = null, uaOverride: String? = null): String {
-        client.newCall(request(url, referer, accept, uaOverride)).execute().use { r ->
+        http.newCall(request(url, referer, accept, uaOverride)).execute().use { r ->
             if (!r.isSuccessful) throw IOException(msg(r.code, url))
             return r.body?.string().orEmpty()
         }
@@ -72,9 +144,18 @@ object Net {
     fun getJson(url: String, referer: String? = null): String =
         get(url, referer, "application/json, text/plain, */*")
 
+    /** 短超时 GET：给多镜像轮询用。 */
+    fun getFast(url: String, referer: String? = null, uaOverride: String? = null): String {
+        httpFast.newCall(request(url, referer, accept = "text/html,application/xhtml+xml,*/*;q=0.8", uaOverride = uaOverride))
+            .execute().use { r ->
+                if (!r.isSuccessful) throw IOException(msg(r.code, url))
+                return r.body?.string().orEmpty()
+            }
+    }
+
     /** 下载/探测用：返回未消费的响应，调用方负责 close。 */
     fun open(url: String, referer: String? = null, uaOverride: String? = null): Response {
-        val r = client.newCall(request(url, referer, accept = "application/pdf,*/*", uaOverride = uaOverride)).execute()
+        val r = http.newCall(request(url, referer, accept = "application/pdf,*/*", uaOverride = uaOverride)).execute()
         if (!r.isSuccessful) {
             val c = r.code
             r.close()
@@ -86,7 +167,7 @@ object Net {
     /** 只取响应头，判断是不是真 PDF / 有没有被重定向到登录页。 */
     fun probe(url: String, referer: String? = null): ProbeResult {
         return try {
-            val r = client.newCall(request(url, referer, accept = "application/pdf,*/*")).execute()
+            val r = http.newCall(request(url, referer, accept = "application/pdf,*/*")).execute()
             r.use {
                 ProbeResult(
                     ok = it.isSuccessful,
@@ -98,6 +179,26 @@ object Net {
             }
         } catch (e: Exception) {
             ProbeResult(false, 0, "", -1L, url)
+        }
+    }
+
+    /** 网络自检：GET 一个地址，返回状态、耗时和正文（截断），给「自检」页判断用。 */
+    data class Diag(val ok: Boolean, val detail: String, val ms: Long, val body: String)
+
+    fun diag(url: String, accept: String? = null, uaOverride: String? = null): Diag {
+        val t0 = System.currentTimeMillis()
+        return try {
+            http.newCall(request(url, accept = accept, uaOverride = uaOverride)).execute().use { r ->
+                val ms = System.currentTimeMillis() - t0
+                val body = try {
+                    r.peekBody(4096).string()
+                } catch (e: Exception) {
+                    ""
+                }
+                Diag(r.isSuccessful, "HTTP " + r.code + " · " + r.header("Content-Type").orEmpty().take(40), ms, body)
+            }
+        } catch (e: Exception) {
+            Diag(false, e.message ?: e.javaClass.simpleName, System.currentTimeMillis() - t0, "")
         }
     }
 
