@@ -542,7 +542,7 @@ private fun SettingsScreen(vm: SearchViewModel) {
             onValueChange = { proxy = it },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
-            placeholder = { Text("127.0.0.1:7890", fontSize = 13.sp) },
+            placeholder = { Text("7890 或 127.0.0.1:7890", fontSize = 13.sp) },
             shape = RoundedCornerShape(14.dp),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedContainerColor = MaterialTheme.colorScheme.surface,

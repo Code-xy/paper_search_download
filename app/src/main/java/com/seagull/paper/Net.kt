@@ -95,6 +95,15 @@ object Net {
             httpFast = buildFast(null, -1)
             return
         }
+        // Clash 用户最常见的输入就是端口号，只填端口默认走 127.0.0.1
+        if (s.all { it.isDigit() }) {
+            val port = s.toIntOrNull() ?: -1
+            if (port in 1..65535) {
+                http = build("127.0.0.1", port)
+                httpFast = buildFast("127.0.0.1", port)
+                return
+            }
+        }
         val parts = s.split(":")
         val host = parts.getOrNull(0).orEmpty().trim()
         val port = parts.getOrNull(1)?.trim()?.toIntOrNull() ?: -1

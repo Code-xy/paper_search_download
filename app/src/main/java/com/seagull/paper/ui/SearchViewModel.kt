@@ -147,7 +147,20 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         store.proxy = spec
         proxySpec = spec.trim()
         Net.setProxyFromSpec(proxySpec)
-        _tip.value = if (proxySpec.isEmpty()) "已关闭代理（直连）" else "代理已启用：" + proxySpec
+        if (proxySpec.isEmpty()) {
+            _tip.value = "已关闭代理（直连）"
+            return
+        }
+        _tip.value = "代理已启用，正在探测可用性…"
+        viewModelScope.launch {
+            val t0 = System.currentTimeMillis()
+            val r = withContext(Dispatchers.IO) {
+                Net.diag("https://www.google.com/generate_204")
+            }
+            val ms = System.currentTimeMillis() - t0
+            _tip.value = if (r.ok) "代理可用 ✔ Google 通了（" + ms + "ms），现在去搜学术就有着落了"
+            else "代理已保存，但探测失败：" + r.detail + "（检查梯子是否在跑、端口对不对）"
+        }
     }
 
     /** 网络自检：把每个源的失败原因摊开，别只给用户看一个「失败」。 */
