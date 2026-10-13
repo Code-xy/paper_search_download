@@ -300,6 +300,6 @@ class McpHttp(
 
     companion object {
         const val LATEST = "2025-06-18"
-        const val APP_VERSION = "1.4.1"
+        const val APP_VERSION = "1.4.2"
     }
 }

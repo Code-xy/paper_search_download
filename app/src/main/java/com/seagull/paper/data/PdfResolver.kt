@@ -206,6 +206,15 @@ object PdfResolver {
                 ?: return ResolveStep("Europe PMC", false, "无记录")
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
+                val pmcid0 = o.optString("pmcid").trim()
+                // PMC 的官方 REST 全文接口最稳（不带 CF 挑战、不校验 Referer、不 403）
+                if (pmcid0.isNotEmpty()) {
+                    return ResolveStep(
+                        "Europe PMC", true,
+                        "https://www.ebi.ac.uk/europepmc/webservices/rest/" + pmcid0 + "/fullTextPDF",
+                        "https://europepmc.org/"
+                    )
+                }
                 val list = o.optJSONObject("fullTextUrlList")?.optJSONArray("fullTextUrl")
                 if (list != null) {
                     for (k in 0 until list.length()) {
@@ -216,7 +225,7 @@ object PdfResolver {
                         }
                     }
                 }
-                val pmcid = o.optString("pmcid").trim()
+                val pmcid = pmcid0
                 if (pmcid.isNotEmpty()) {
                     // 官方 REST 全文接口最稳（不带 Cloudflare 挑战、不校验 Referer）
                     return ResolveStep(
