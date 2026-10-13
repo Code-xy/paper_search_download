@@ -24,6 +24,10 @@ object GoogleScholarSource : PaperSource {
 
     private const val PER_PAGE = 10
 
+    /** 上次抓成功的镜像，下次优先用：能少浪费十几秒。 */
+    @Volatile
+    private var lastGoodHost: String = ""
+
     private fun looksCaptcha(html: String): Boolean {
         val s = html.lowercase()
         return s.contains("gs_captcha") ||
@@ -35,14 +39,17 @@ object GoogleScholarSource : PaperSource {
     }
 
     override suspend fun search(query: String, page: Int): List<PaperItem> = withContext(Dispatchers.IO) {
-        val mirrors = RemoteConfig.active.scholarMirrors
+        val conf = RemoteConfig.active.scholarMirrors
+        val mirrors = if (lastGoodHost.isNotEmpty() && conf.contains(lastGoodHost)) {
+            listOf(lastGoodHost) + conf.filter { it != lastGoodHost }
+        } else conf
         var lastErr = "没有可用的学术镜像"
 
         fun urlOf(host: String): String = host.trimEnd('/') + "/scholar?hl=zh-CN&as_sdt=0%2C5&q=" +
                 Util.encPath(query) + "&start=" + (page - 1) * PER_PAGE
 
-        // 第一轮：普通 HTTP（快、省电）
-        for (host in mirrors) {
+        // 第一轮：普通 HTTP（快、省电），最多试 3 个镜像，别把预算耗光
+        for (host in mirrors.take(3)) {
             try {
                 val html = Net.getFast(urlOf(host), referer = host + "/", uaOverride = Net.DESKTOP_UA)
                 if (looksCaptcha(html)) {
@@ -50,7 +57,10 @@ object GoogleScholarSource : PaperSource {
                     continue
                 }
                 val items = parse(html, host)
-                if (items.isNotEmpty()) return@withContext items
+                if (items.isNotEmpty()) {
+                    lastGoodHost = host
+                    return@withContext items
+                }
                 lastErr = "镜像没出结果：" + Util.host(host)
             } catch (e: Exception) {
                 lastErr = (e.message ?: "请求失败") + " · " + Util.host(host)
@@ -63,7 +73,9 @@ object GoogleScholarSource : PaperSource {
         val app = com.seagull.paper.AppRef.get
         if (app != null) {
             for (host in mirrors.take(2)) {
-                val html = com.seagull.paper.web.WebFetcher.fetchHtml(app, urlOf(host), settleMs = 2600L)
+                val html = com.seagull.paper.web.WebFetcher.fetchHtml(
+                    app, urlOf(host), settleMs = 1800L, timeoutMs = 18000L
+                )
                 if (html.isBlank()) {
                     lastErr = "WebView 打不开：" + Util.host(host)
                     continue
@@ -73,8 +85,11 @@ object GoogleScholarSource : PaperSource {
                     continue
                 }
                 val items = parse(html, host)
-                if (items.isNotEmpty()) return@withContext items
-                lastErr = "WebView 里也没解析出结果：" + Util.host(host)
+                if (items.isNotEmpty()) {
+                    lastGoodHost = host
+                    return@withContext items
+                }
+                lastErr = "WebView 里也没解析出结果（多半是被人机验证拦了）：" + Util.host(host)
             }
         }
         throw IOException(lastErr)

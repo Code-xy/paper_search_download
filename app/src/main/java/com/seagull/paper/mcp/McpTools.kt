@@ -14,6 +14,7 @@ import com.seagull.paper.data.SourceCatalog
 import com.seagull.paper.data.SourceEvent
 import com.seagull.paper.data.Store
 import com.seagull.paper.data.Util
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
@@ -205,18 +206,27 @@ class McpTools(private val app: Application) {
 
         val found = LinkedHashMap<String, PaperItem>()
         val stats = ArrayList<String>()
-        withTimeoutOrNull(timeout) {
-            SearchEngine.stream(list, q, page).collect { ev ->
-                when (ev) {
-                    is SourceEvent.Done -> {
-                        ev.items.forEach { if (!found.containsKey(it.key)) found[it.key] = it }
-                        stats.add(ev.sourceName + " " + ev.items.size)
-                    }
+        var timedOut = false
+        try {
+            val r = withTimeoutOrNull(timeout) {
+                SearchEngine.stream(list, q, page).collect { ev ->
+                    when (ev) {
+                        is SourceEvent.Done -> {
+                            ev.items.forEach { if (!found.containsKey(it.key)) found[it.key] = it }
+                            stats.add(ev.sourceName + " " + ev.items.size)
+                        }
 
-                    is SourceEvent.Failed -> stats.add(ev.sourceName + " 失败(" + ev.message.take(30) + ")")
-                    else -> Unit
+                        is SourceEvent.Failed -> stats.add(ev.sourceName + " 失败(" + ev.message.take(30) + ")")
+                        else -> Unit
+                    }
                 }
+                "done"
             }
+            if (r == null) timedOut = true
+        } catch (e: CancellationException) {
+            // 慢源（比如 Google 学术走 WebView）超时会把收集协程取消掉，
+            // 这里不能把整次调用判死——已经拿到的结果照样返回。
+            timedOut = true
         }
         val sorted = found.values.sortedWith(
             compareByDescending<PaperItem> { it.hasPdf }.thenByDescending { it.citations }.thenByDescending { it.year }
@@ -224,7 +234,9 @@ class McpTools(private val app: Application) {
 
         val sb = StringBuilder()
         sb.append("关键词：").append(q).append("  第 ").append(page).append(" 页\n")
-        sb.append("源统计：").append(if (stats.isEmpty()) "全部超时" else stats.joinToString(" · ")).append('\n')
+        sb.append("源统计：").append(if (stats.isEmpty()) "全部超时" else stats.joinToString(" · "))
+        if (timedOut) sb.append("　（超时截断，已返回已拿到的部分）")
+        sb.append('\n')
         sb.append("去重后取前 ").append(sorted.size).append(" 条（共 ").append(found.size).append(" 条）\n\n")
         sorted.forEachIndexed { i, p -> sb.append(paperLine(i + 1, p)).append('\n') }
         if (sorted.isEmpty()) sb.append("没有结果。建议先跑 diagnose 看链路，或换关键词。\n")

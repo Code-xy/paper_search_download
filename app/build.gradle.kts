@@ -34,8 +34,8 @@ android {
         applicationId = "com.seagull.paper"
         minSdk = 24
         targetSdk = 35
-        versionCode = pVCode?.toIntOrNull() ?: 11
-        versionName = pVName ?: "1.3.2"
+        versionCode = pVCode?.toIntOrNull() ?: 12
+        versionName = pVName ?: "1.3.3"
         vectorDrawables.useSupportLibrary = true
 
         if (pAbi.isNotEmpty()) {
